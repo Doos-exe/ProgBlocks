@@ -1,3 +1,5 @@
+''' WELCOME TO PROGBLOCKS'''
+
 import pygame
 import sys
 
