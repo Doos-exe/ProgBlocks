@@ -1,201 +1,265 @@
-''' WELCOME TO PROGBLOCKS'''
-
 import pygame
 import sys
 
 # Initialize Pygame
 pygame.init()
 
-# Constants
-WIDTH, HEIGHT = 1000, 600
+# --- COLORS ---
+BG_COLOR = (211, 211, 211)
+WORKSPACE_COLOR = (245, 245, 245)
+CONSOLE_COLOR = (0, 0, 0)
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
-GRAY = (200, 200, 200)
-LIGHT_BLUE = (100, 150, 240)
-GREEN = (50, 200, 100)
-RED = (220, 50, 50)
-ORANGE = (255, 165, 0)
-PURPLE = (160, 32, 240)
+GREEN_TEXT = (0, 255, 0)
+RED_TEXT = (255, 50, 50)
+HIGHLIGHT_COLOR = (255, 255, 0) # For snapping preview
 
-# Screen setup
+# Block Colors
+ORANGE_BLOCK = (255, 140, 0)
+BLUE_BLOCK = (70, 130, 180)
+GRAY_BLOCK = (169, 169, 169)
+PURPLE_BLOCK = (153, 50, 204)
+CLEAR_BTN_COLOR = (244, 67, 54)
+RUN_BTN_COLOR = (76, 175, 80)
+
+# --- SCREEN SETUP ---
+WIDTH, HEIGHT = 900, 650
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Scratch-style Mini Language Builder")
-font = pygame.font.SysFont('Arial', 18)
-header_font = pygame.font.SysFont('Arial', 24, bold=True)
+pygame.display.set_caption("ProgBlocks: Snap & Edit")
 
-# Block data definitions
-BLOCK_TYPES = {
-    'KEYWORD': ORANGE,
-    'OPERATOR': LIGHT_BLUE,
-    'IDENTIFIER': GREEN,
-    'LITERAL': PURPLE,
-    'SEPARATOR': GRAY
-}
+# --- FONTS ---
+font_small = pygame.font.SysFont('Arial', 16, bold=True)
+font_header = pygame.font.SysFont('Arial', 24, bold=True)
+font_console = pygame.font.SysFont('Consolas', 14)
 
+# --- CONFIGURATION ---
 AVAILABLE_BLOCKS = [
-    ('int', 'KEYWORD'), ('float', 'KEYWORD'), ('char', 'KEYWORD'), ('string', 'KEYWORD'),
-    ('x', 'IDENTIFIER'), ('y', 'IDENTIFIER'), ('z', 'IDENTIFIER'),
-    ('=', 'OPERATOR'), ('+', 'OPERATOR'), ('-', 'OPERATOR'),
-    ('*', 'OPERATOR'), ('/', 'OPERATOR'), (';', 'SEPARATOR'),
-    ('(', 'SEPARATOR'), (')', 'SEPARATOR'), ('{', 'SEPARATOR'), ('}', 'SEPARATOR'),
-    ('10', 'LITERAL'), ('20', 'LITERAL'), ('3.14', 'LITERAL'), ('"Hello"', 'LITERAL')
+    ("digit", ORANGE_BLOCK, "TYPE"),
+    ("word", ORANGE_BLOCK, "TYPE"),
+    ("bet", ORANGE_BLOCK, "TYPE"),
+    (":", BLUE_BLOCK, "OP"),
+    ("adds", BLUE_BLOCK, "OP"),
+    ("minus", BLUE_BLOCK, "OP"),
+    ("end", GRAY_BLOCK, "DELIM"),
+    ("out", GRAY_BLOCK, "OUT"),
+    ("data", PURPLE_BLOCK, "EDITABLE") # This one is editable
 ]
 
 class Block:
-    def __init__(self, text, category, x, y):
-        self.text = str(text)
+    def __init__(self, text, color, category, x, y, is_template=False):
+        self.text = text
+        self.color = color
         self.category = category
-        self.color = BLOCK_TYPES.get(category, GRAY)
-        text_surface = font.render(self.text, True, WHITE)
-        self.width = max(80, text_surface.get_width() + 20)
-        self.height = 40
+        self.is_template = is_template
+        self.is_editing = False
+        
+        # Connection properties
+        self.next_block = None
+        self.prev_block = None
+        
+        self.update_size()
         self.rect = pygame.Rect(x, y, self.width, self.height)
         self.dragging = False
 
+    def update_size(self):
+        text_surf = font_small.render(self.text + ("|" if self.is_editing else ""), True, WHITE)
+        self.width = max(80, text_surf.get_width() + 20)
+        self.height = 35
+
     def draw(self, surface):
-        pygame.draw.rect(surface, self.color, self.rect, border_radius=5)
-        text_surf = font.render(self.text, True, WHITE)
+        # Draw snapping preview
+        if self.dragging:
+            # Logic for snapping handled in main loop, but we can highlight here if needed
+            pass
+            
+        pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+        if self.is_editing:
+            pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
+            
+        text_surf = font_small.render(self.text + ("|" if self.is_editing else ""), True, WHITE)
         text_rect = text_surf.get_rect(center=self.rect.center)
         surface.blit(text_surf, text_rect)
 
-# List of blocks currently placed in the workspace
-placed_blocks = []
-# Sidebar for choosing blocks
+    def update_position(self, x, y):
+        self.rect.x = x
+        self.rect.y = y
+        if self.next_block:
+            self.next_block.update_position(self.rect.right + 2, self.rect.y)
+
+# --- INITIALIZE UI ---
 sidebar_blocks = []
-for i, (text, cat) in enumerate(AVAILABLE_BLOCKS):
-    col = i // 12
-    row = i % 12
-    sidebar_blocks.append(Block(text, cat, 20 + col * 90, 60 + row * 45))
+for i, (text, color, cat) in enumerate(AVAILABLE_BLOCKS):
+    col = i % 2
+    row = i // 2
+    sidebar_blocks.append(Block(text, color, cat, 15 + col * 85, 60 + row * 45, is_template=True))
 
+placed_blocks = []
 dragging_block = None
-offset_x = 0
-offset_y = 0
-output_message = "Workspace ready. Drag blocks to build your line of code."
+editing_block = None
+offset_x, offset_y = 0, 0
+console_output = ["Blueprint ready! Use Purple blocks for custom data/names."]
 
-def evaluate_code(blocks):
+def get_root(block):
+    curr = block
+    while curr.prev_block:
+        curr = curr.prev_block
+    return curr
+
+def get_chain(block):
+    root = get_root(block)
+    chain = []
+    curr = root
+    while curr:
+        chain.append(curr)
+        curr = curr.next_block
+    return chain
+
+def evaluate_chain(blocks):
     if not blocks:
-        return "Nothing to execute."
+        return ["Error: No blocks in workspace."]
     
-    # Sort blocks by their x-coordinate to form a sequence
-    sorted_blocks = sorted(blocks, key=lambda b: b.rect.x)
-    code = " ".join([b.text for b in sorted_blocks])
+    # Find the longest chain or the chain starting at the leftmost block
+    # For simplicity, we take the chain of the first block found in workspace
+    root = get_root(blocks[0])
+    chain = get_chain(root)
+    tokens = [b.text for b in chain]
+    code_str = " ".join(tokens)
     
-    # Basic evaluation logic inspired by the provided Activity rules
-    try:
-        # Check for assignment patterns
-        if "=" in code:
-            parts = code.split("=")
-            left_part = parts[0].strip().split()
-            right_part = parts[1].strip().rstrip(';').strip()
-            
-            if len(left_part) == 2: # type identifier
-                var_type = left_part[0]
-                var_name = left_part[1]
-                
-                if var_type == 'int':
-                    if right_part.isdigit():
-                        return f"SUCCESS: Assigned integer {right_part} to variable {var_name}."
-                    else:
-                        return f"SEMANTIC ERROR: Cannot assign '{right_part}' to int variable {var_name}."
-                elif var_type == 'float':
-                    try:
-                        float(right_part)
-                        return f"SUCCESS: Assigned float {right_part} to variable {var_name}."
-                    except ValueError:
-                        return f"SEMANTIC ERROR: Cannot assign '{right_part}' to float variable {var_name}."
-            
-        return f"Code analyzed: {code}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    results = [f"Code: {code_str}"]
+    
+    # --- CHEAT SHEET LOGIC ---
+    if tokens[-1] != "end":
+        results.append("Syntax Error: Chain must end with 'end'.")
+    elif tokens[0] not in ["digit", "word", "bet", "out"]:
+        results.append("Syntax Error: Start with a Type or 'out'.")
+    else:
+        # Basic Semantic check
+        if tokens[0] == "digit" and len(tokens) >= 4:
+             val = tokens[3]
+             if not val.isdigit():
+                 results.append(f"Semantic Error: 'digit' cannot be {val}.")
+        
+    if len(results) == 1:
+        results.append("Status: COMPILATION SUCCESS")
+    else:
+        results.append("Status: COMPILATION FAILED")
+    return results
 
-# Main loop
+# --- BUTTONS ---
+clear_rect = pygame.Rect(WIDTH - 230, 415, 100, 35)
+run_rect = pygame.Rect(WIDTH - 115, 415, 100, 35)
+
+# --- MAIN LOOP ---
 running = True
 while running:
-    screen.fill((240, 240, 240))
+    screen.fill(BG_COLOR)
     
-    # Draw Sidebar
-    pygame.draw.rect(screen, (220, 220, 220), (0, 0, 200, HEIGHT))
-    screen.blit(header_font.render("Blocks Library", True, BLACK), (20, 20))
-    for b in sidebar_blocks:
-        b.draw(screen)
+    # UI Elements
+    screen.blit(font_header.render("Blox", True, BLACK), (20, 15))
+    screen.blit(font_header.render("Blueprint", True, BLACK), (200, 15))
+    pygame.draw.rect(screen, WORKSPACE_COLOR, (200, 60, WIDTH - 220, 340), border_radius=5)
     
-    # Draw Workspace
-    pygame.draw.rect(screen, (255, 255, 255), (210, 60, 780, 400), border_radius=10)
-    screen.blit(header_font.render("Workspace Area", True, BLACK), (220, 20))
+    pygame.draw.rect(screen, CLEAR_BTN_COLOR, clear_rect, border_radius=8)
+    screen.blit(font_small.render("CLEAR", True, WHITE), (clear_rect.centerx - 25, clear_rect.centery - 10))
+    pygame.draw.rect(screen, RUN_BTN_COLOR, run_rect, border_radius=8)
+    screen.blit(font_small.render("RUN", True, WHITE), (run_rect.centerx - 15, run_rect.centery - 10))
     
-    # Draw UI elements
-    run_btn = pygame.Rect(880, 470, 100, 40)
-    pygame.draw.rect(screen, GREEN, run_btn, border_radius=5)
-    screen.blit(font.render("RUN", True, WHITE), (run_btn.centerx - 15, run_btn.centery - 10))
-    
-    clear_btn = pygame.Rect(770, 470, 100, 40)
-    pygame.draw.rect(screen, RED, clear_btn, border_radius=5)
-    screen.blit(font.render("CLEAR", True, WHITE), (clear_btn.centerx - 25, clear_btn.centery - 10))
+    pygame.draw.rect(screen, CONSOLE_COLOR, (200, 460, WIDTH - 220, 150))
+    for i, line in enumerate(console_output[-7:]):
+        color = GREEN_TEXT if any(x in line for x in ["SUCCESS", "ready", "Code:"]) else RED_TEXT
+        screen.blit(font_console.render(line, True, color), (210, 470 + i * 20))
 
-    # Output Console
-    pygame.draw.rect(screen, (0, 0, 0), (210, 520, 780, 70))
-    screen.blit(font.render(output_message, True, (0, 255, 0)), (220, 540))
+    # Draw Blocks
+    for b in sidebar_blocks: b.draw(screen)
+    for b in placed_blocks: b.draw(screen)
 
-    # Event handling
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
             
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1:
-                # Clicked on sidebar?
-                for b in sidebar_blocks:
+            # 1. Sidebar Click
+            for b in sidebar_blocks:
+                if b.rect.collidepoint(event.pos):
+                    new_b = Block(b.text, b.color, b.category, b.rect.x, b.rect.y)
+                    new_b.dragging = True
+                    dragging_block = new_b
+                    offset_x, offset_y = b.rect.x - event.pos[0], b.rect.y - event.pos[1]
+                    placed_blocks.append(new_b)
+                    break
+            
+            # 2. Workspace Click
+            if not dragging_block:
+                for b in reversed(placed_blocks):
                     if b.rect.collidepoint(event.pos):
-                        new_block = Block(b.text, b.category, event.pos[0]-40, event.pos[1]-20)
-                        new_block.dragging = True
-                        placed_blocks.append(new_block)
-                        dragging_block = new_block
-                        offset_x = new_block.rect.x - event.pos[0]
-                        offset_y = new_block.rect.y - event.pos[1]
+                        # Start editing if it's an editable block
+                        if b.category == "EDITABLE":
+                            if editing_block: editing_block.is_editing = False
+                            editing_block = b
+                            b.is_editing = True
+                        
+                        # Break connection when picking up
+                        if b.prev_block:
+                            b.prev_block.next_block = None
+                            b.prev_block = None
+                            
+                        b.dragging = True
+                        dragging_block = b
+                        offset_x, offset_y = b.rect.x - event.pos[0], b.rect.y - event.pos[1]
+                        placed_blocks.remove(b)
+                        placed_blocks.append(b)
                         break
-                
-                # Clicked on placed block?
-                if not dragging_block:
-                    for b in reversed(placed_blocks):
-                        if b.rect.collidepoint(event.pos):
-                            b.dragging = True
-                            dragging_block = b
-                            offset_x = b.rect.x - event.pos[0]
-                            offset_y = b.rect.y - event.pos[1]
-                            placed_blocks.remove(b)
-                            placed_blocks.append(b) # move to top
+                else:
+                    if editing_block:
+                        editing_block.is_editing = False
+                        editing_block = None
+            
+            # 3. Buttons
+            if clear_rect.collidepoint(event.pos):
+                placed_blocks = []
+                console_output = ["Workspace cleared."]
+            elif run_rect.collidepoint(event.pos):
+                console_output = evaluate_chain(placed_blocks)
+
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if dragging_block:
+                dragging_block.dragging = False
+                # Snapping Logic
+                for other in placed_blocks:
+                    if other != dragging_block and not other.next_block:
+                        # Check if dragging_block's left is near other's right
+                        if abs(dragging_block.rect.left - other.rect.right) < 20 and \
+                           abs(dragging_block.rect.centery - other.rect.centery) < 20:
+                            other.next_block = dragging_block
+                            dragging_block.prev_block = other
+                            dragging_block.update_position(other.rect.right + 2, other.rect.y)
                             break
                 
-                # Clicked Run?
-                if run_btn.collidepoint(event.pos):
-                    output_message = evaluate_code(placed_blocks)
+                if dragging_block.rect.x < 190:
+                    placed_blocks.remove(dragging_block)
+                dragging_block = None
                 
-                # Clicked Clear?
-                if clear_btn.collidepoint(event.pos):
-                    placed_blocks = []
-                    output_message = "Workspace cleared."
-                    
-        elif event.type == pygame.MOUSEBUTTONUP:
-            if event.button == 1:
-                if dragging_block:
-                    dragging_block.dragging = False
-                    # Remove if dragged back into the sidebar area
-                    if dragging_block.rect.x < 200:
-                        placed_blocks.remove(dragging_block)
-                    dragging_block = None
-                    
         elif event.type == pygame.MOUSEMOTION:
             if dragging_block:
-                dragging_block.rect.x = event.pos[0] + offset_x
-                dragging_block.rect.y = event.pos[1] + offset_y
+                dragging_block.update_position(event.pos[0] + offset_x, event.pos[1] + offset_y)
 
-    # Draw placed blocks
-    for b in placed_blocks:
-        b.draw(screen)
+        elif event.type == pygame.KEYDOWN:
+            if editing_block:
+                if event.key == pygame.K_BACKSPACE:
+                    editing_block.text = editing_block.text[:-1]
+                elif event.key == pygame.K_RETURN:
+                    editing_block.is_editing = False
+                    editing_block = None
+                else:
+                    if len(editing_block.text) < 15:
+                        editing_block.text += event.unicode
+                if editing_block:
+                    editing_block.update_size()
+                    # Re-align chain after size change
+                    root = get_root(editing_block)
+                    root.update_position(root.rect.x, root.rect.y)
 
     pygame.display.flip()
 
 pygame.quit()
 sys.exit()
-
-# testing the code
