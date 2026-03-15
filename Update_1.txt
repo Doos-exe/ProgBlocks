@@ -1,0 +1,20 @@
+DATE: 03/15/26
+
+Updates:
+- Added the keywords for the ProgBlocks System
+- Added the logic and rules for each phase (Lexical, Syntactical, Semantical)
+- Fixed the UI
+- word and digit is working
+- Out is woring
+
+To Update:
+- Add and edit some comments
+- Some logic for the actual program
+ - The adds and minus logic
+ - Double check some error
+- Fix the output of some test cases
+
+
+ 
+
+ 
