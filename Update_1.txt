@@ -12,7 +12,14 @@ To Update:
 - Some logic for the actual program
  - The adds and minus logic
  - Double check some error
-- Fix the output of some test cases
+- Fix the expected output of the code
+- Add the expected output from the guidelines
+ - Add a specific section for these (explainability layer)
+ - For lexical analysis the identifier of each blocks
+ - For syntax analysis the expected structure
+ - For semantic analysis the correct logic along with symbol table
+ - Add recovery strategies for the error occur
+
 
 
  
