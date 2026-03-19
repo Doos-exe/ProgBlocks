@@ -60,27 +60,43 @@ class Block:
         self.is_editing = False
         self.next_block = None
         self.prev_block = None
+        self.connection_direction = "vertical"  # Track if next block connects horizontally or vertically
+        self.text_surf = None  # Cache for rendered text surface
+        self.rect = None  # Will be set after update_size
         self.update_size()
         self.rect = pygame.Rect(x, y, self.width, self.height)
         self.dragging = False
 
     def update_size(self):
         try:
-            text_surf = font_small.render(self.text + ("|" if self.is_editing else ""), True, WHITE)
+            text_display = self.text + ("|" if self.is_editing else "")
+            text_surf = font_small.render(text_display, True, WHITE)
             self.width = max(80, text_surf.get_width() + 20)
             self.height = 35
+            self.text_surf = text_surf  # Cache the rendered surface
         except:
             self.width = 80
             self.height = 35
+            self.text_surf = None
+        # Update rect dimensions only if rect exists
+        if self.rect:
+            self.rect.width = self.width
+            self.rect.height = self.height
 
     def draw(self, surface):
         pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
         if self.is_editing:
             pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
         try:
-            text_surf = font_small.render(self.text + ("|" if self.is_editing else ""), True, WHITE)
-            text_rect = text_surf.get_rect(center=self.rect.center)
-            surface.blit(text_surf, text_rect)
+            # Use cached text surface if available, otherwise render
+            if self.text_surf:
+                text_rect = self.text_surf.get_rect(center=self.rect.center)
+                surface.blit(self.text_surf, text_rect)
+            else:
+                text_display = self.text + ("|" if self.is_editing else "")
+                text_surf = font_small.render(text_display, True, WHITE)
+                text_rect = text_surf.get_rect(center=self.rect.center)
+                surface.blit(text_surf, text_rect)
         except:
             pass
 
@@ -88,7 +104,13 @@ class Block:
         self.rect.x = x
         self.rect.y = y
         if self.next_block:
-            self.next_block.update_position(self.rect.right + 2, self.rect.y)
+            # Chain next block based on connection direction
+            if self.connection_direction == "horizontal":
+                # Position next block to the right
+                self.next_block.update_position(self.rect.right + 2, self.rect.y)
+            else:
+                # Position next block below (vertical - default)
+                self.next_block.update_position(self.rect.x, self.rect.bottom + 2)
 
 # ---- THE COMPILER ----
 """This function checks if the token is valid"""
@@ -134,7 +156,7 @@ def get_literal_type(literal):
             return 'word'
         if literal.startswith("'") and literal.endswith("'") and len(literal) >= 2:
             return 'word'
-        if stripped.lower() in ['true', 'false']:
+        if stripped.lower() in ['real', 'fake']:
             return 'bet'
     except:
         pass
@@ -145,10 +167,8 @@ def lexical_analysis(tokens):
     errors = []
     for i, token in enumerate(tokens):
         if not is_valid_token(token):
-            if token in KEYWORDS:
-                errors.append(f"Lexical Error [{i+1}]: '{token}' is a keyword, cannot use as identifier")
-            elif get_literal_type(token) is None and not is_valid_identifier(token):
-                errors.append(f"Lexical Error [{i+1}]: '{token}' is not a valid token")
+            if get_literal_type(token) is None and not is_valid_identifier(token):
+                errors.append(f"Lexical Error [{i+1}]: Variable '{token}' not found")
             else:
                 errors.append(f"Lexical Error [{i+1}]: Invalid token '{token}'")
     return errors
@@ -218,27 +238,40 @@ def evaluate_compiler_logic(blocks):
     if not blocks:
         return ["Error: No blocks in workspace.", "Status: COMPILATION FAILED"], {}
 
-    # Connection of Blocks
-    curr = blocks[0] if blocks else None
-    while curr and curr.prev_block:
-        curr = curr.prev_block
-    chain = []
-    while curr:
-        chain.append(curr)
-        curr = curr.next_block
+    # Find all chain starts (blocks with no prev_block)
+    chain_starts = [b for b in blocks if b.prev_block is None]
 
-    if not chain:
+    if not chain_starts:
         return ["Error: No valid blocks found.", "Status: COMPILATION FAILED"], {}
 
+    # Sort chain starts by Y position (top to bottom), then by X position (left to right)
+    chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
+
+    # Walk each chain and collect all blocks in order
+    all_chains = []
+    for start_block in chain_starts:
+        chain = []
+        curr = start_block
+        while curr:
+            chain.append(curr)
+            curr = curr.next_block
+        all_chains.append(chain)
+
+    # Flatten all chains into one list of blocks
+    all_blocks = []
+    for chain in all_chains:
+        all_blocks.extend(chain)
+
     # Tokenization of Block Texts
-    tokens = [block.text.strip() for block in chain if block.text and block.text.strip()]
+    tokens = [block.text.strip() for block in all_blocks if block.text and block.text.strip()]
 
     if not tokens:
         return ["Error: No valid tokens.", "Status: COMPILATION FAILED"], {}
 
     results = []
     compiled_lines = []
-    detailed_phases = {"lexical": [], "syntax": [], "semantic": [], "recovery": []}
+    output_results = []  # Separate list for output results to maintain order
+    detailed_phases = {"lexical": [], "syntax": [], "semantic": [], "recovery": [], "symbol_table": [], "phase_status": {}}
 
     # Lexical Analysis
     lexical_errors = lexical_analysis(tokens)
@@ -287,6 +320,16 @@ def evaluate_compiler_logic(blocks):
         detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", tokens[0])
         return results, detailed_phases
 
+    # Check for keywords used as identifiers
+    for i, token in enumerate(tokens):
+        if token in KEYWORDS and i > 0 and tokens[i-1] in ['digit', 'word', 'bet']:
+            results.append(f"Syntax Error [{i+1}]: Cannot use keyword '{token}' as identifier")
+            results.append("Status: SYNTAX ANALYSIS FAILED")
+            detailed_phases["syntax"].append(f"ERROR: Keyword '{token}' cannot be used as identifier at position {i+1}")
+            detailed_phases["syntax"].append("Result: [FAILED]")
+            detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", "")
+            return results, detailed_phases
+
     detailed_phases["syntax"].append(f"First token: {tokens[0]} (Valid)")
     detailed_phases["syntax"].append(f"Last token: {tokens[-1]} (Valid terminator)")
     detailed_phases["syntax"].append("Result: [PASSED]")
@@ -295,6 +338,8 @@ def evaluate_compiler_logic(blocks):
 
     # Semantic Analysis
     variables = {}
+    memory_offset = 0  # Track memory offset for variables
+    offset_sizes = {'digit': 4, 'word': 1, 'bet': 2}  # Byte sizes for each type
     error_occurred = False
     detailed_phases["semantic"].append("PHASE: SEMANTIC ANALYSIS")
 
@@ -304,16 +349,37 @@ def evaluate_compiler_logic(blocks):
 
         # If invalid token
         if token in ['digit', 'word', 'bet']:
-            if i + 4 >= len(tokens) or tokens[i+2] != ':' or tokens[i+4] != 'end':
-                results.append(f"Semantic Error [{i+1}]: Invalid declaration - expected ID : VALUE end")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Invalid declaration at token {i+1}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                break
+            # Check for operation pattern: TYPE NAME : VALUE OP VALUE end (7 tokens)
+            # or simple pattern: TYPE NAME : VALUE end (5 tokens)
+            has_operation = False
+            operation = None
+
+            if i + 6 < len(tokens) and tokens[i+2] == ':' and tokens[i+4] in ['adds', 'minus'] and tokens[i+6] == 'end':
+                # 7-token pattern: TYPE NAME : VALUE OP VALUE end
+                has_operation = True
+                operation = tokens[i+4]
+            elif i + 4 >= len(tokens) or tokens[i+2] != ':' or tokens[i+4] != 'end':
+                # Invalid structure
+                if not (i + 6 < len(tokens) and tokens[i+4] in ['adds', 'minus']):
+                    results.append(f"Semantic Error [{i+1}]: Invalid declaration - expected ID : VALUE end")
+                    error_occurred = True
+                    detailed_phases["semantic"].append(f"ERROR: Invalid declaration at token {i+1}")
+                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
+                    break
 
             var_name = tokens[i+1]
             value = tokens[i+3]
             expected_type = token
+
+            # Pre-strip values once to avoid redundant .strip() calls
+            value_stripped = value.strip('"\'')
+
+            # Get second operand if operation exists
+            if has_operation:
+                value2 = tokens[i+5]
+                value2_stripped = value2.strip('"\'')
+            else:
+                value2_stripped = None
 
             # Check if variable name is a keyword - not allowed
             if var_name in KEYWORDS:
@@ -348,7 +414,7 @@ def evaluate_compiler_logic(blocks):
                 detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "use valid identifier: letters, numbers, underscores")
                 break
 
-            # Type Mismatch Checker
+            # Type Mismatch Checker for first value
             actual_type = get_literal_type(value)
             if actual_type != expected_type:
                 results.append(f"Semantic Error [{i+3}]: Type mismatch - expected {expected_type}, got {actual_type or 'invalid'}")
@@ -357,69 +423,205 @@ def evaluate_compiler_logic(blocks):
                 detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"expected {expected_type}, got {actual_type}")
                 break
 
-            # Binding variable to value
+            # Type check second operand if operation exists
+            if has_operation:
+                actual_type2 = get_literal_type(value2)
+                if actual_type2 != expected_type:
+                    results.append(f"Semantic Error [{i+5}]: Type mismatch in operation - expected {expected_type}, got {actual_type2 or 'invalid'}")
+                    error_occurred = True
+                    detailed_phases["semantic"].append(f"ERROR: Type mismatch in operation - expected {expected_type}, got {actual_type2}")
+                    detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"both operands must be {expected_type}")
+                    break
+
+            # Binding variable to value (with operation if applicable)
             if expected_type == 'digit':
                 try:
-                    variables[var_name] = int(value.strip('"\''))
+                    val1 = int(value_stripped)
                 except:
-                    variables[var_name] = float(value.strip('"\''))
-            elif expected_type == 'word':
-                variables[var_name] = value.strip('"\'')
-            elif expected_type == 'bet':
-                variables[var_name] = value.strip('"\'').lower() == 'true'
+                    val1 = float(value_stripped)
 
-            if expected_type == 'digit':
-                compiled_lines.append(f"digit {var_name} : {value} end")
-            elif expected_type == 'word':
-                compiled_lines.append(f"word {var_name} : {value} end")
-            elif expected_type == 'bet':
-                compiled_lines.append(f"bet {var_name} : {value} end")
+                if has_operation:
+                    try:
+                        val2 = int(value2_stripped)
+                    except:
+                        val2 = float(value2_stripped)
 
-            detailed_phases["semantic"].append(f"  Declaration: {expected_type} {var_name} : {value}")
-            detailed_phases["semantic"].append(f"    Variable '{var_name}' bound to value '{value}' (type: {expected_type})")
-            i += 5
+                    if operation == 'adds':
+                        variables[var_name] = val1 + val2
+                    elif operation == 'minus':
+                        variables[var_name] = val1 - val2
+                else:
+                    variables[var_name] = val1
+
+            elif expected_type == 'word':
+                val1 = value_stripped
+
+                if has_operation:
+                    val2 = value2_stripped
+
+                    if operation == 'adds':
+                        variables[var_name] = val1 + val2
+                    elif operation == 'minus':
+                        # Remove first occurrence of val2 from val1
+                        variables[var_name] = val1.replace(val2, '', 1)
+                else:
+                    variables[var_name] = val1
+
+            elif expected_type == 'bet':
+                variables[var_name] = value_stripped.lower() == 'real'
+
+            # Compile output
+            if has_operation:
+                compiled_lines.append(f"{expected_type} {var_name} : {value} {operation} {value2} end")
+            else:
+                if expected_type == 'digit':
+                    compiled_lines.append(f"digit {var_name} : {value} end")
+                elif expected_type == 'word':
+                    compiled_lines.append(f"word {var_name} : {value} end")
+                elif expected_type == 'bet':
+                    compiled_lines.append(f"bet {var_name} : {value} end")
+
+            # Semantic detail output
+            if has_operation:
+                detailed_phases["semantic"].append(f"  Declaration: {expected_type} {var_name} : {value} {operation} {value2}")
+                detailed_phases["semantic"].append(f"    Variable '{var_name}' bound to value '{variables[var_name]}' (type: {expected_type})")
+            else:
+                detailed_phases["semantic"].append(f"  Declaration: {expected_type} {var_name} : {value}")
+                detailed_phases["semantic"].append(f"    Variable '{var_name}' bound to value '{value}' (type: {expected_type})")
+
+            # Add to symbol table (formatted as table with scope and offset)
+            scope_level = 0  # Global scope
+            detailed_phases["symbol_table"].append(f"{var_name:<20} {expected_type:<15} {scope_level:<12} {memory_offset}")
+            # Update memory offset for next variable
+            memory_offset += offset_sizes.get(expected_type, 0)
+
+            # Increment by 7 if operation, else 5
+            i += 7 if has_operation else 5
 
         # Output Statement
         elif token == 'out':
-            if i + 2 >= len(tokens) or tokens[i+2] != 'end':
-                results.append(f"Semantic Error [{i+1}]: Invalid output - expected ID/LITERAL end")
+            # Check for operation pattern: out VALUE OP VALUE end (5 tokens)
+            # or simple pattern: out VALUE end (3 tokens)
+            has_out_operation = False
+            operation = None
+
+            if i + 4 < len(tokens) and tokens[i+2] in ['adds', 'minus'] and tokens[i+4] == 'end':
+                # 5-token pattern: out VALUE OP VALUE end
+                has_out_operation = True
+                operation = tokens[i+2]
+            elif i + 2 >= len(tokens) or tokens[i+2] != 'end':
+                results.append(f"Semantic Error [{i+1}]: Invalid output - expected out VALUE end or out VALUE OP VALUE end")
                 error_occurred = True
                 detailed_phases["semantic"].append(f"ERROR: Invalid output statement at token {i+1}")
                 detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "output format: out VALUE end")
                 break
 
-            output_value = tokens[i+1]
-            compiled_lines.append(f"out {output_value} end")
+            output_value1 = tokens[i+1]
 
-            # Variable output
-            if output_value in variables:
-                results.append(f"> {variables[output_value]}")
-                detailed_phases["semantic"].append(f"  Output: Variable '{output_value}' = {variables[output_value]}")
-            # Literal output
-            else:
-                lit_type = get_literal_type(output_value)
-                if lit_type:
-                    if lit_type == 'digit':
-                        try:
-                            val = int(output_value.strip('"\''))
-                        except:
-                            val = float(output_value.strip('"\''))
-                        results.append(f"> {val}")
-                        detailed_phases["semantic"].append(f"  Output: Literal value '{val}' (type: {lit_type})")
-                    elif lit_type == 'word':
-                        results.append(f"> {output_value.strip('\"\'')}")
-                        detailed_phases["semantic"].append(f"  Output: Literal string '{output_value.strip('\"\'')}'")
-                    else:
-                        results.append(f"> {output_value}")
-                        detailed_phases["semantic"].append(f"  Output: Literal value '{output_value}'")
+            # Handle output with operation
+            if has_out_operation:
+                output_value2 = tokens[i+3]
+                compiled_lines.append(f"out {output_value1} {operation} {output_value2} end")
+
+                # Get values for both operands
+                val1 = None
+                val2 = None
+                is_digit_op = False
+
+                # Get first value
+                if output_value1 in variables:
+                    val1 = variables[output_value1]
                 else:
-                    results.append(f"Semantic Error [{i+1}]: Undefined identifier '{output_value}'")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Undefined identifier '{output_value}' at token {i+1}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", output_value)
-                    break
+                    lit_type = get_literal_type(output_value1)
+                    if lit_type == 'digit':
+                        is_digit_op = True
+                        try:
+                            val1 = int(output_value1.strip('"\''))
+                        except:
+                            val1 = float(output_value1.strip('"\''))
+                    elif lit_type == 'word':
+                        val1 = output_value1.strip('"\'')
+                    else:
+                        results.append(f"Semantic Error [{i+1}]: Undefined identifier or invalid value '{output_value1}'")
+                        error_occurred = True
+                        detailed_phases["semantic"].append(f"ERROR: Invalid output value '{output_value1}'")
+                        break
 
-            i += 3
+                # Get second value
+                if output_value2 in variables:
+                    val2 = variables[output_value2]
+                else:
+                    lit_type = get_literal_type(output_value2)
+                    if lit_type == 'digit':
+                        is_digit_op = True
+                        try:
+                            val2 = int(output_value2.strip('"\''))
+                        except:
+                            val2 = float(output_value2.strip('"\''))
+                    elif lit_type == 'word':
+                        val2 = output_value2.strip('"\'')
+                    else:
+                        results.append(f"Semantic Error [{i+3}]: Undefined identifier or invalid value '{output_value2}'")
+                        error_occurred = True
+                        detailed_phases["semantic"].append(f"ERROR: Invalid output value '{output_value2}'")
+                        break
+
+                # Perform operation and output
+                if operation == 'adds':
+                    result = val1 + val2
+                elif operation == 'minus':
+                    # Check actual types of values (not just if they came from literals)
+                    if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+                        # Both are numbers - do subtraction
+                        result = val1 - val2
+                    elif isinstance(val1, str) and isinstance(val2, str):
+                        # Both are strings - remove first occurrence of val2 from val1
+                        result = val1.replace(val2, '', 1)
+                    else:
+                        # Type mismatch
+                        results.append(f"Semantic Error [{i+1}]: Cannot use minus with mixed types")
+                        error_occurred = True
+                        detailed_phases["semantic"].append(f"ERROR: Type mismatch in minus operation")
+                        break
+
+                output_results.append(f"> {result}")
+                detailed_phases["semantic"].append(f"  Output: {output_value1} {operation} {output_value2} = {result}")
+                i += 5
+            else:
+                # Simple output without operation
+                compiled_lines.append(f"out {output_value1} end")
+
+                # Variable output
+                if output_value1 in variables:
+                    output_results.append(f"> {variables[output_value1]}")
+                    detailed_phases["semantic"].append(f"  Output: Variable '{output_value1}' = {variables[output_value1]}")
+                # Literal output
+                else:
+                    lit_type = get_literal_type(output_value1)
+                    if lit_type:
+                        # Cache stripped value to avoid redundant .strip() calls
+                        output_stripped = output_value1.strip('"\'')
+                        if lit_type == 'digit':
+                            try:
+                                val = int(output_stripped)
+                            except:
+                                val = float(output_stripped)
+                            output_results.append(f"> {val}")
+                            detailed_phases["semantic"].append(f"  Output: Literal value '{val}' (type: {lit_type})")
+                        elif lit_type == 'word':
+                            output_results.append(f"> {output_stripped}")
+                            detailed_phases["semantic"].append(f"  Output: Literal string '{output_stripped}'")
+                        else:
+                            output_results.append(f"> {output_value1}")
+                            detailed_phases["semantic"].append(f"  Output: Literal value '{output_value1}'")
+                    else:
+                        results.append(f"Semantic Error [{i+1}]: Undefined identifier '{output_value1}'")
+                        error_occurred = True
+                        detailed_phases["semantic"].append(f"ERROR: Undefined identifier '{output_value1}' at token {i+1}")
+                        detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", output_value1)
+                        break
+
+                i += 3
         else:
             i += 1
 
@@ -431,6 +633,10 @@ def evaluate_compiler_logic(blocks):
         results.append("Compiled Output:")
         results.extend(compiled_lines)
 
+    # Output Results (in correct order after compiled output)
+    if output_results:
+        results.extend(output_results)
+
     # Compiler Status
     if error_occurred:
         results.append("Status: SEMANTIC ANALYSIS FAILED")
@@ -439,6 +645,13 @@ def evaluate_compiler_logic(blocks):
         results.append("Status: COMPILATION SUCCESS")
         results.append("Program executed successfully!")
         detailed_phases["semantic"].append("Result: [PASSED]")
+
+    # Pre-compute phase status to avoid per-frame string operations
+    detailed_phases["phase_status"] = {
+        "lexical": "PASSED" in " ".join(detailed_phases.get("lexical", [])),
+        "syntax": "PASSED" in " ".join(detailed_phases.get("syntax", [])),
+        "semantic": "PASSED" in " ".join(detailed_phases.get("semantic", []))
+    }
 
     return results, detailed_phases
 
@@ -461,9 +674,9 @@ def show_explainability_window(detailed_phases):
 
         # Display each phase
         for phase_name, phase_color, phase_indent in [
-            ("LEXICAL ANALYSIS", GREEN_TEXT if "PASSED" in " ".join(detailed_phases.get("lexical", [])) else RED_TEXT, 0),
-            ("SYNTAX ANALYSIS", GREEN_TEXT if "PASSED" in " ".join(detailed_phases.get("syntax", [])) else RED_TEXT, 0),
-            ("SEMANTIC ANALYSIS", GREEN_TEXT if "PASSED" in " ".join(detailed_phases.get("semantic", [])) else RED_TEXT, 0)
+            ("LEXICAL ANALYSIS", GREEN_TEXT if detailed_phases.get("phase_status", {}).get("lexical", False) else RED_TEXT, 0),
+            ("SYNTAX ANALYSIS", GREEN_TEXT if detailed_phases.get("phase_status", {}).get("syntax", False) else RED_TEXT, 0),
+            ("SEMANTIC ANALYSIS", GREEN_TEXT if detailed_phases.get("phase_status", {}).get("semantic", False) else RED_TEXT, 0)
         ]:
             phase_key = phase_name.lower().split()[0]
 
@@ -478,6 +691,35 @@ def show_explainability_window(detailed_phases):
                 if y_pos - scroll_offset > 0 and y_pos - scroll_offset < 680:
                     detail_text = font_console.render(detail_line, True, (200, 200, 200))
                     detail_window.blit(detail_text, (30 + phase_indent, y_pos - scroll_offset))
+                y_pos += line_height
+
+            y_pos += 10
+
+        # Display symbol table if there are variables
+        if detailed_phases.get("symbol_table"):
+            y_pos += 5
+            if y_pos - scroll_offset > 0 and y_pos - scroll_offset < 680:
+                symbol_header = font_small.render("SYMBOL TABLE", True, BLUE_TEXT)
+                detail_window.blit(symbol_header, (20, y_pos - scroll_offset))
+            y_pos += line_height + 5
+
+            # Display column headers
+            if y_pos - scroll_offset > 0 and y_pos - scroll_offset < 680:
+                column_header = font_console.render(f"{'Name':<20} {'Type':<15} {'Scope':<12} {'Offset':<10}", True, (150, 150, 150))
+                detail_window.blit(column_header, (30, y_pos - scroll_offset))
+            y_pos += line_height
+
+            # Display separator
+            if y_pos - scroll_offset > 0 and y_pos - scroll_offset < 680:
+                separator = font_console.render("-" * 57, True, (100, 100, 100))
+                detail_window.blit(separator, (30, y_pos - scroll_offset))
+            y_pos += line_height
+
+            # Display symbol table rows
+            for symbol_line in detailed_phases.get("symbol_table", []):
+                if y_pos - scroll_offset > 0 and y_pos - scroll_offset < 680:
+                    symbol_text = font_console.render(symbol_line, True, (200, 200, 200))
+                    detail_window.blit(symbol_text, (30, y_pos - scroll_offset))
                 y_pos += line_height
 
             y_pos += 10
@@ -526,6 +768,8 @@ editing_block = None
 offset_x, offset_y = 0, 0
 console_output = ["Blueprint ready!", "Drag blocks from the left to start building your program."]
 detailed_phases = {}
+workspace_scroll_offset = 0  # Vertical scroll offset for code workspace
+console_scroll_offset = 0  # Vertical scroll offset for console output
 
 clear_rect = pygame.Rect(WIDTH - 230, 415, 100, 35)
 run_rect = pygame.Rect(WIDTH - 115, 415, 100, 35)
@@ -549,15 +793,37 @@ while running:
     screen.blit(font_small.render("INFO", True, WHITE), (info_rect.centerx - 18, info_rect.centery - 10))
     
     pygame.draw.rect(screen, CONSOLE_COLOR, (200, 460, WIDTH - 220, 160))
-    for i, line in enumerate(console_output[-9:]):
-        color = BLUE_TEXT if line.startswith(">") else (GREEN_TEXT if "PASSED" in line or "OK" in line or "SUCCESS" in line or "ready" in line else RED_TEXT)
-        try:
-            screen.blit(font_console.render(line, True, color), (210, 470 + i * 17))
-        except:
-            pass
+    # Draw console output with scroll support
+    line_height = 17  # Height of each line
+    console_start_y = 470  # Starting Y position
+    console_max_y = 620   # Maximum Y position (460 + 160)
+
+    # Draw all lines with scroll offset
+    for i, line in enumerate(console_output):
+        # Calculate Y position with scroll offset
+        y_pos = console_start_y + (i * line_height) - console_scroll_offset
+
+        # Only draw if within console area
+        if y_pos > 460 and y_pos < console_max_y:
+            color = BLUE_TEXT if line.startswith(">") else (GREEN_TEXT if "PASSED" in line or "OK" in line or "SUCCESS" in line or "ready" in line else RED_TEXT)
+            try:
+                screen.blit(font_console.render(line, True, color), (210, y_pos))
+            except:
+                pass
 
     for b in sidebar_blocks: b.draw(screen)
-    for b in placed_blocks: b.draw(screen)
+    # Draw placed blocks with scroll offset applied (clip to workspace area)
+    for b in placed_blocks:
+        # Save original position
+        orig_rect = pygame.Rect(b.rect)
+        # Apply scroll offset to Y coordinate for drawing
+        b.rect.y -= workspace_scroll_offset
+        # Only draw if block is within workspace area (not overlapping console)
+        if b.rect.y + b.rect.height <= 460:  # Don't draw below console area
+            b.draw(screen)
+        # Restore original position
+        b.rect.x = orig_rect.x
+        b.rect.y = orig_rect.y
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -626,9 +892,21 @@ while running:
                 
                 for other in placed_blocks:
                     if other != dragging_block and other.next_block is None:
-                        if (abs(dragging_block.rect.left - other.rect.right) < 20 and 
-                            abs(dragging_block.rect.centery - other.rect.centery) < 20):
+                        # Check for VERTICAL connection (block below another)
+                        if (abs(dragging_block.rect.top - other.rect.bottom) < 20 and
+                            dragging_block.rect.centerx == other.rect.centerx):
+                            # Connect vertically - block goes below
                             other.next_block = dragging_block
+                            other.connection_direction = "vertical"
+                            dragging_block.prev_block = other
+                            dragging_block.update_position(other.rect.x, other.rect.bottom + 2)
+                            break
+                        # Check for HORIZONTAL connection (block to the right of another)
+                        elif (abs(dragging_block.rect.left - other.rect.right) < 20 and
+                              abs(dragging_block.rect.centery - other.rect.centery) < 20):
+                            # Connect horizontally - block goes to the right
+                            other.next_block = dragging_block
+                            other.connection_direction = "horizontal"
                             dragging_block.prev_block = other
                             dragging_block.update_position(other.rect.right + 2, other.rect.y)
                             break
@@ -669,6 +947,24 @@ while running:
                         editing_block.update_size()
                     except:
                         pass
+            # Scroll workspace with arrow keys (works even when editing)
+            if event.key == pygame.K_UP:
+                workspace_scroll_offset = max(0, workspace_scroll_offset - 30)
+            elif event.key == pygame.K_DOWN:
+                # Calculate maximum scroll based on deepest block
+                if placed_blocks:
+                    deepest_block = max(placed_blocks, key=lambda b: b.rect.bottom)
+                    max_scroll = max(0, deepest_block.rect.bottom - 500)
+                else:
+                    max_scroll = 0
+                workspace_scroll_offset = min(workspace_scroll_offset + 30, max_scroll)
+            # Scroll console with Page Up/Page Down keys
+            elif event.key == pygame.K_PAGEUP:
+                console_scroll_offset = max(0, console_scroll_offset - 50)
+            elif event.key == pygame.K_PAGEDOWN:
+                # Calculate maximum scroll based on number of lines
+                max_console_scroll = max(0, (len(console_output) - 9) * 17)
+                console_scroll_offset = min(console_scroll_offset + 50, max_console_scroll)
     
     pygame.display.flip()
     clock.tick(60)

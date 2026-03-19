@@ -1,0 +1,17 @@
+DATE: 03/19/26
+
+Updates:
+- Create test cases for the system
+- Keyword as identifier error should be syntactical
+- Expandable data block
+- The adds and minus logic for digit
+- Add symbol table for the info tab
+- Can take multiple lines of code (experimental)
+
+To Update:
+- Invalid literals with no "" should error no variable found
+- The adds and minus logic for word
+- Bet logic
+- Scrollable terminal window
+- Blueprint logic (blocks going out of bounds)
+
