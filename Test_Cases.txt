@@ -24,9 +24,8 @@ __________WORD__________
 
 
 __________BET__________
-- (Real)			bet Real end
-- (Fake)			bet Fake end
-- (Identifier)			bet x end
+- (Real)			bet result := 5 5 end
+- (Fake)			bet result := 5 4 end
 
 
 __________OUT__________

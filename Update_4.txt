@@ -1,0 +1,14 @@
+DATE: 03/21/26
+
+Updates:
+- Variables that were not declared will cause and error
+- Scrollable terminal window
+- Somehow fixed the blueprint window logic
+- Add logic for word
+- Bet logic
+- The UI for info menu
+- Total number of bytes
+- Error with same variable names
+
+To Update:
+
