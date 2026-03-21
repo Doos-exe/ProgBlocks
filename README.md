@@ -1,6 +1,6 @@
 # ProgBlocks: Block and Compile!
 
-A visual block-based programming language built with Python and Pygame. ProgBlocks allows you to write code using draggable visual blocks instead of typing syntax, making programming more intuitive and visual.
+A low-code based programming language built with **Python** and **Pygame**. ProgBlocks allows you to write code by dragging and dropping visual blocks instead of typing syntax, making programming more fun and visual. 
 
 ## Features
 
@@ -13,13 +13,6 @@ A visual block-based programming language built with Python and Pygame. ProgBloc
 - **Interactive Console**: View output and error messages
 - **Symbol Table**: Track all variables and their values
 - **Multi-line Code Support**: Write complex programs with multiple statements
-
-## System Requirements
-
-- **Python**: 3.7 or higher
-- **OS**: Windows, macOS, or Linux
-- **RAM**: Minimum 2GB
-- **Display**: Minimum 900x650 resolution
 
 ## Installation
 
@@ -51,12 +44,12 @@ python -c "import pygame; print(f'Pygame version: {pygame.version.ver}')"
 Navigate to the project directory and run:
 
 ```bash
-python FINAL_PROJECT_DRAFT.py
+python FINAL_PROJECT.py
 ```
 
 Or on some systems:
 ```bash
-python3 FINAL_PROJECT_DRAFT.py
+python3 FINAL_PROJECT.py
 ```
 
 The ProgBlocks window should open with the GUI ready for use.
@@ -203,42 +196,6 @@ out "Hello" end                            ✓ Correct
 out 2 end                                  ✓ Correct
 out hello end                              ✗ Invalid identifier (missing quotes)
 ```
-
-## Troubleshooting
-
-### "ModuleNotFoundError: No module named 'pygame'"
-**Solution**: Reinstall pygame using:
-```bash
-pip install --upgrade pygame
-```
-
-### Window doesn't appear or crashes immediately
-**Solution**:
-- Check your Python version is 3.7+: `python --version`
-- Try running from Command Prompt/Terminal directly
-- Check that your display supports 900x650 resolution
-
-### Blocks not responding to clicks
-**Solution**:
-- Make sure the window is in focus
-- Try clicking in the center of the block
-- Restart ProgBlocks
-
-## Development Notes
-
-### Recent Updates (v1.0)
-- Created comprehensive test cases
-- Implemented keyword-as-identifier error detection
-- Added expandable data blocks
-- Implemented adds/minus logic for digits
-- Added symbol table to info tab
-- Multi-line code support
-
-### Planned Features
-- Fixes for string adds/minus logic
-- Bet condition evaluation logic
-- Scrollable terminal window
-- Improved block boundary handling
 
 ## License
 
