@@ -90,13 +90,13 @@ Declares a boolean value (Real or Fake).
 
 **Syntax:**
 ```
-bet <value> end
+bet <identifier> := <value1> <value2> end
 ```
 
 **Examples:**
 ```
-bet Real end
-bet Fake end
+bet true := 1 1 end
+bet false := 1 2 end
 ```
 
 ### Output - `out`
@@ -152,14 +152,9 @@ digit diff : 10 minus 3 end      // Result: 7
 
 - **Drag a Block**: Click and drag any block from the template panel to the workspace
 - **Edit Data Block**: Double-click a purple data block to enter a custom value
-- **Delete a Block**: Press `Ctrl+D` after selecting a block (or use the delete button)
+- **Delete a Block**: Drag the block to outside the blueprint area
 - **Compile & Run**: Click the "RUN" button to execute your program
 - **Clear Workspace**: Click the "CLEAR" button to remove all blocks
-
-### Keyboard Shortcuts
-
-- `Ctrl+D`: Delete selected block
-- `Click + Drag`: Move blocks around the workspace
 
 ## Test Cases
 
@@ -170,7 +165,7 @@ The system includes comprehensive test cases for validation:
 digit int : 5 end                          ✓ Correct
 digit int : 5                              ✗ Missing end
 digit digit : 5 end                        ✗ Invalid identifier (keyword used)
-digit int : hello end                      ✗ Invalid literal
+digit int : "hello" end                    ✗ Invalid literal
 digit int : 1 adds 2 end                   ✓ Valid addition
 digit int : 2 minus 2 end                  ✓ Valid subtraction
 ```
@@ -179,22 +174,21 @@ digit int : 2 minus 2 end                  ✓ Valid subtraction
 ```
 word x : "hello" end                       ✓ Correct
 word x : "hello" adds " world" end         ✓ Valid concatenation
-word test : "tes end                       ✗ Unclosed string
+word test : "test end                      ✗ Unclosed string
 word num : 1 end                           ✗ Invalid literal (expected string)
 ```
 
 ### Boolean Tests
 ```
-bet Real end                               ✓ Correct
-bet Fake end                               ✓ Correct
-bet x end                                  ✓ Valid identifier
+bet result := 5 5 end                      ✓ Correct
+bet result := 5 4 end                      ✓ Correct
+
 ```
 
 ### Output Tests
 ```
 out "Hello" end                            ✓ Correct
 out 2 end                                  ✓ Correct
-out hello end                              ✗ Invalid identifier (missing quotes)
 ```
 
 ## License
@@ -203,4 +197,4 @@ This is an academic project developed as a final project for Programming Languag
 
 ## Support
 
-For issues or questions, contact the development team or refer to the test cases for expected behavior examples.
+For issues or questions, contact the owner or refer to the test cases for expected behavior examples.
