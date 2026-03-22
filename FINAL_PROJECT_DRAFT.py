@@ -485,7 +485,8 @@ def evaluate_compiler_logic(blocks):
                 variable_types[var_name] = 'bet'  # Store type
                 compiled_lines.append(f"bet {var_name} := {value1} {value2} end")
                 detailed_phases["semantic"].append(f"  Comparison: bet {var_name} := {value1} {value2}")
-                detailed_phases["semantic"].append(f"    Variable '{var_name}' assigned comparison result: {variables[var_name]} (type: bet)")
+                bet_result = "Real" if variables[var_name] else "Fake"
+                detailed_phases["semantic"].append(f"    Variable '{var_name}' assigned comparison result: {bet_result} (type: bet)")
 
                 # Add to symbol table
                 scope_level = 0
@@ -812,8 +813,12 @@ def evaluate_compiler_logic(blocks):
 
                 # Variable output
                 if output_value1 in variables:
-                    output_results.append(f"> {variables[output_value1]}")
-                    detailed_phases["semantic"].append(f"  Output: Variable '{output_value1}' = {variables[output_value1]}")
+                    output_val = variables[output_value1]
+                    # Convert bet (boolean) values to Real/Fake
+                    if isinstance(output_val, bool):
+                        output_val = "Real" if output_val else "Fake"
+                    output_results.append(f"> {output_val}")
+                    detailed_phases["semantic"].append(f"  Output: Variable '{output_value1}' = {output_val}")
                 # Literal output
                 else:
                     lit_type = get_literal_type(output_value1)
