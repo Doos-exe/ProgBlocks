@@ -8,7 +8,6 @@ Updates:
 
 To Update:
 - Readable Comments
-- Make the code somehow human made
 - Check for some errors
  - Adds and minus logic
  - Each phases logic
