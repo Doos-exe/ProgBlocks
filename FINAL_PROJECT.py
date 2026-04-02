@@ -24,8 +24,39 @@ CLEAR_BTN_COLOR = (244, 67, 54)
 RUN_BTN_COLOR = (76, 175, 80)
 
 # Screen Setup
-WIDTH, HEIGHT = 900, 650
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+ORIGINAL_WIDTH, ORIGINAL_HEIGHT = 900, 650
+MINIMUM_WIDTH, MINIMUM_HEIGHT = 600, 400
+WIDTH, HEIGHT = ORIGINAL_WIDTH, ORIGINAL_HEIGHT
+
+# Sidebar and workspace constants
+SIDEBAR_WIDTH = 170
+WORKSPACE_LEFT = 200
+WORKSPACE_BOTTOM = 460
+CONSOLE_HEIGHT = 160
+BUTTON_HEIGHT = 35
+
+# Zoom and layout variables
+zoom_scale = 1.0
+ZOOM_MIN = 0.5
+ZOOM_MAX = 2.0
+ZOOM_STEP = 0.1
+
+# Dynamic layout boundaries (calculated in recalculate_ui_positions)
+HEADER_HEIGHT = 50
+CONSOLE_HEIGHT_FIXED = 120
+WORKSPACE_RIGHT_MARGIN = 20
+
+# Separator configuration for draggable console
+SEPARATOR_HEIGHT = 10  # Draggable zone height (±5px from separator line)
+MIN_CONSOLE_HEIGHT = 60  # Minimum console height when dragged
+MAX_CONSOLE_HEIGHT = int(ORIGINAL_HEIGHT * 0.75)  # Max before workspace becomes too small
+
+workspace_top = HEADER_HEIGHT
+workspace_bottom = HEIGHT - CONSOLE_HEIGHT_FIXED
+console_top = HEIGHT - CONSOLE_HEIGHT_FIXED
+console_bottom = HEIGHT
+
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
 pygame.display.set_caption("ProgBlocks: Block and Compile!")
 
 # Fonts
@@ -245,7 +276,7 @@ def evaluate_compiler_logic(blocks):
         return ["Error: No blocks in workspace.", "Status: COMPILATION FAILED"], {}
 
     # Remove blocks that are outside the blueprint area
-    valid_blocks = [b for b in blocks if b.rect.x >= 200 and b.rect.x + b.rect.width <= WIDTH - 20 and b.rect.y >= 60 and b.rect.y + b.rect.height <= 460]
+    valid_blocks = [b for b in blocks if b.rect.x >= WORKSPACE_LEFT and b.rect.x + b.rect.width <= WIDTH - WORKSPACE_RIGHT_MARGIN and b.rect.y >= workspace_top and b.rect.y + b.rect.height <= workspace_bottom]
 
     if not valid_blocks:
         return ["Error: No blocks in valid blueprint area.", "Status: COMPILATION FAILED"], {}
@@ -881,7 +912,10 @@ def evaluate_compiler_logic(blocks):
 
 # ---- EXPLAINABILITY WINDOW ----
 def show_explainability_window(detailed_phases):
-    detail_window = pygame.display.set_mode((1000, 700))
+    # Make explainability window proportional to main window size
+    expl_width = max(int(WIDTH * 1.1), 1000)
+    expl_height = max(int(HEIGHT * 1.1), 700)
+    detail_window = pygame.display.set_mode((expl_width, expl_height), pygame.RESIZABLE)
     pygame.display.set_caption("ProgBlocks: Explainability Layer")
     detail_running = True
     scroll_offset = 0
@@ -889,13 +923,18 @@ def show_explainability_window(detailed_phases):
 
     while detail_running:
         detail_window.fill(CONSOLE_COLOR)
+        expl_width, expl_height = detail_window.get_size()
+
+        # Calculate drawable area bounds for content
+        content_min_y = 50
+        content_max_y = expl_height - 40
 
         # Draw header
         header_text = font_header.render("COMPILER ANALYSIS PHASES", True, BLUE_TEXT)
         detail_window.blit(header_text, (20, 15))
 
         # Draw separator line below header
-        pygame.draw.line(detail_window, BLUE_TEXT, (20, 50), (980, 50), 1)
+        pygame.draw.line(detail_window, BLUE_TEXT, (20, 50), (expl_width - 20, 50), 1)
 
         y_pos = 70  # Start lower with separator
         line_height = 18
@@ -909,7 +948,7 @@ def show_explainability_window(detailed_phases):
             phase_key = phase_name.lower().split()[0]
 
             # Phase header
-            if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                 phase_header = font_small.render(phase_name, True, phase_color)
                 detail_window.blit(phase_header, (20 + phase_indent, y_pos - scroll_offset))
             y_pos += line_height + 5
@@ -917,7 +956,7 @@ def show_explainability_window(detailed_phases):
             # Phase details - improved formatting
             phase_details = detailed_phases.get(phase_key, [])
             for detail_line in phase_details:
-                if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+                if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                     # Skip empty lines or header lines that start with "PHASE:"
                     if detail_line.strip() and not detail_line.startswith("PHASE:"):
                         detail_text = font_console.render(detail_line, True, (200, 200, 200))
@@ -929,19 +968,19 @@ def show_explainability_window(detailed_phases):
         # Display symbol table if there are variables
         if detailed_phases.get("symbol_table"):
             y_pos += 5
-            if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                 symbol_header = font_small.render("SYMBOL TABLE", True, BLUE_TEXT)
                 detail_window.blit(symbol_header, (20, y_pos - scroll_offset))
             y_pos += line_height + 5
 
-            # Display column headers 
-            if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+            # Display column headers
+            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                 column_header = font_console.render(f"{'Name':<20} {'Type':<15} {'Scope':<10} {'Offset':<10}", True, (150, 150, 150))
                 detail_window.blit(column_header, (30, y_pos - scroll_offset))
             y_pos += line_height
 
             # Display separator
-            if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                 separator = font_console.render("-" * 55, True, (100, 100, 100))
                 detail_window.blit(separator, (30, y_pos - scroll_offset))
             y_pos += line_height
@@ -949,7 +988,7 @@ def show_explainability_window(detailed_phases):
             # Display symbol table and calculate total byte used
             total_bytes = 0
             for symbol_line in detailed_phases.get("symbol_table", []):
-                if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+                if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                     symbol_text = font_console.render(symbol_line, True, (200, 200, 200))
                     detail_window.blit(symbol_text, (30, y_pos - scroll_offset))
 
@@ -963,7 +1002,7 @@ def show_explainability_window(detailed_phases):
 
             # Display total bytes used
             y_pos += 5
-            if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                 total_text = font_console.render(f"Total Memory Used: {total_bytes} bytes", True, (100, 200, 255))
                 detail_window.blit(total_text, (30, y_pos - scroll_offset))
             y_pos += line_height + 10
@@ -971,27 +1010,31 @@ def show_explainability_window(detailed_phases):
         # Display recovery strategies if there are errors
         if detailed_phases.get("recovery"):
             y_pos += 5
-            if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                 recovery_header = font_small.render("RECOVERY STRATEGIES", True, (255, 200, 0))
                 detail_window.blit(recovery_header, (20, y_pos - scroll_offset))
             y_pos += line_height + 5
 
             for strategy_line in detailed_phases.get("recovery", []):
-                if y_pos - scroll_offset > 50 and y_pos - scroll_offset < 630:
+                if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
                     strategy_text = font_console.render(strategy_line, True, (100, 200, 255))
                     detail_window.blit(strategy_text, (30, y_pos - scroll_offset))
                 y_pos += line_height
 
         # Draw scroll instructions at the bottom with separator
-        pygame.draw.line(detail_window, BLUE_TEXT, (20, 660), (980, 660), 1)
+        pygame.draw.line(detail_window, BLUE_TEXT, (20, expl_height - 40), (expl_width - 20, expl_height - 40), 1)
         scroll_text = font_small.render("Scroll: ScrollWheel | Close: ESC", True, BLUE_TEXT)
-        detail_window.blit(scroll_text, (20, 670))
+        detail_window.blit(scroll_text, (20, expl_height - 30))
 
         pygame.display.flip()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 detail_running = False
+            elif event.type == pygame.VIDEORESIZE:
+                # Handle explainability window resize
+                expl_width, expl_height = event.size[0], event.size[1]
+                detail_window = pygame.display.set_mode((expl_width, expl_height), pygame.RESIZABLE)
             elif event.type == pygame.MOUSEWHEEL:
                 if event.y > 0:  # Scroll up
                     scroll_offset = max(0, scroll_offset - 30)
@@ -1003,11 +1046,107 @@ def show_explainability_window(detailed_phases):
 
         clock.tick(60)
 
-    pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
     pygame.display.set_caption("ProgBlocks: Official Logic Edition")
 
+# ---- HELPER FUNCTIONS FOR RESIZABLE WINDOW ----
+def recalculate_ui_positions():
+    """Recalculate all UI positions based on current window size"""
+    global clear_rect, run_rect, info_rect, zoom_in_rect, zoom_out_rect
+    global workspace_top, workspace_bottom, console_top, console_bottom
+    global dynamic_console_height
+
+    # Header area is fixed at 50px from top
+    workspace_top = HEADER_HEIGHT
+    console_top = HEIGHT - dynamic_console_height
+    workspace_bottom = console_top
+    console_bottom = HEIGHT
+
+    # Constrain console_top to valid range based on console height bounds
+    console_top = max(HEIGHT - MAX_CONSOLE_HEIGHT, console_top)
+    console_top = min(HEIGHT - MIN_CONSOLE_HEIGHT, console_top)
+    workspace_bottom = console_top
+
+    # Buttons in header (right side, top padding of 12px)
+    button_y = 12
+    button_h = 35
+
+    # Right-aligned buttons: INFO, CLEAR, RUN, ZOOM-, ZOOM+
+    # Each button is 80px wide (except zoom buttons at 35px)
+    run_rect = pygame.Rect(WIDTH - 90, button_y, 80, button_h)
+    clear_rect = pygame.Rect(WIDTH - 180, button_y, 80, button_h)
+    info_rect = pygame.Rect(WIDTH - 270, button_y, 80, button_h)
+    zoom_in_rect = pygame.Rect(WIDTH - 360, button_y, 35, button_h)
+    zoom_out_rect = pygame.Rect(WIDTH - 405, button_y, 35, button_h)
+
+
+def get_block_view_rect(block):
+    """Return the on-screen rect for a block with the current zoom/scroll."""
+    return pygame.Rect(
+        int(block.rect.x * zoom_scale),
+        int(block.rect.y * zoom_scale - workspace_scroll_offset),
+        int(block.rect.width * zoom_scale),
+        int(block.rect.height * zoom_scale),
+    )
+
+
+def clamp_block_chain_to_workspace(block):
+    """Keep a block chain inside the workspace without breaking links."""
+    if block.prev_block is not None:
+        return
+
+    chain_blocks = []
+    current = block
+    min_x = current.rect.x
+    min_y = current.rect.y
+    max_right = current.rect.right
+    max_bottom = current.rect.bottom
+
+    while current:
+        chain_blocks.append(current)
+        min_x = min(min_x, current.rect.x)
+        min_y = min(min_y, current.rect.y)
+        max_right = max(max_right, current.rect.right)
+        max_bottom = max(max_bottom, current.rect.bottom)
+        current = current.next_block
+
+    delta_x = 0
+    delta_y = 0
+
+    if min_x < WORKSPACE_LEFT:
+        delta_x = WORKSPACE_LEFT - min_x
+    elif max_right > WIDTH - WORKSPACE_RIGHT_MARGIN:
+        delta_x = (WIDTH - WORKSPACE_RIGHT_MARGIN) - max_right
+
+    if min_y < workspace_top:
+        delta_y = workspace_top - min_y
+    elif max_bottom > workspace_bottom:
+        delta_y = workspace_bottom - max_bottom
+
+    if delta_x or delta_y:
+        block.update_position(block.rect.x + delta_x, block.rect.y + delta_y)
+
+
+def clamp_all_blocks_to_workspace():
+    """Re-clamp all placed block roots after a resize."""
+    for block in placed_blocks:
+        if block.prev_block is None:
+            clamp_block_chain_to_workspace(block)
+
+
+def is_mouse_on_separator(mouse_y):
+    """Check if mouse Y position is near the separator (within SEPARATOR_HEIGHT/2)"""
+    return abs(mouse_y - console_top) <= SEPARATOR_HEIGHT // 2
+
+
+def get_cursor_for_position(mouse_y):
+    """Return appropriate cursor style based on position"""
+    if is_mouse_on_separator(mouse_y):
+        return pygame.SYSTEM_CURSOR_SIZENS  # Vertical resize cursor
+    return pygame.SYSTEM_CURSOR_ARROW
+
 # ---- UI & MAIN LOOP ----
-sidebar_blocks = [Block(t, c, cat, 15 + (i%2)*85, 60 + (i//2)*45, True) for i, (t, c, cat) in enumerate(AVAILABLE_BLOCKS)]
+sidebar_blocks = [Block(t, c, cat, 15 + (i%2)*85, HEADER_HEIGHT + 10 + (i//2)*45, True) for i, (t, c, cat) in enumerate(AVAILABLE_BLOCKS)]
 placed_blocks = []
 dragging_block = None
 editing_block = None
@@ -1017,35 +1156,109 @@ detailed_phases = {}
 workspace_scroll_offset = 0  # Vertical scroll offset for code workspace
 console_scroll_offset = 0  # Vertical scroll offset for console output
 
-clear_rect = pygame.Rect(WIDTH - 230, 415, 100, 35)
-run_rect = pygame.Rect(WIDTH - 115, 415, 100, 35)
-info_rect = pygame.Rect(WIDTH - 350, 415, 100, 35)
+# Draggable separator state
+dragging_separator = False
+separator_mouse_offset = 0
+dynamic_console_height = CONSOLE_HEIGHT_FIXED  # Will change based on drag
+
+# Initialize UI positions (call helper to calculate button positions)
+recalculate_ui_positions()
 
 running = True
 clock = pygame.time.Clock()
 
 while running:
     screen.fill(BG_COLOR)
-    
-    screen.blit(font_header.render("Blox", True, BLACK), (20, 15))
-    screen.blit(font_header.render("Blueprint", True, BLACK), (200, 15))
-    pygame.draw.rect(screen, WORKSPACE_COLOR, (200, 60, WIDTH - 220, 340), border_radius=5)
-    
-    pygame.draw.rect(screen, CLEAR_BTN_COLOR, clear_rect, border_radius=8)
-    screen.blit(font_small.render("CLEAR", True, WHITE), (clear_rect.centerx - 25, clear_rect.centery - 10))
-    pygame.draw.rect(screen, RUN_BTN_COLOR, run_rect, border_radius=8)
-    screen.blit(font_small.render("RUN", True, WHITE), (run_rect.centerx - 15, run_rect.centery - 10))
-    pygame.draw.rect(screen, BLUE_TEXT, info_rect, border_radius=8)
-    screen.blit(font_small.render("INFO", True, WHITE), (info_rect.centerx - 18, info_rect.centery - 10))
-    
-    pygame.draw.rect(screen, CONSOLE_COLOR, (200, 460, WIDTH - 220, 160))
+
+    # Draw header background
+    pygame.draw.rect(screen, WHITE, (0, 0, WIDTH, HEADER_HEIGHT))
+    pygame.draw.line(screen, BLACK, (0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT), 1)
+
+    # Title and labels
+    screen.blit(font_header.render("Blox", True, BLACK), (20, 12))
+    screen.blit(font_header.render("Blueprint", True, BLACK), (WORKSPACE_LEFT + 10, 12))
+
+    # Draw buttons with labels
+    buttons_info = [
+        (info_rect, "INFO", BLUE_TEXT),
+        (clear_rect, "CLEAR", CLEAR_BTN_COLOR),
+        (run_rect, "RUN", RUN_BTN_COLOR),
+    ]
+    for rect, label, color in buttons_info:
+        pygame.draw.rect(screen, color, rect, border_radius=8)
+        text = font_small.render(label, True, WHITE)
+        screen.blit(text, (rect.centerx - text.get_width()//2, rect.centery - text.get_height()//2))
+
+    # Zoom buttons
+    pygame.draw.rect(screen, BLUE_TEXT, zoom_out_rect, border_radius=8)
+    minus_text = font_small.render("-", True, WHITE)
+    screen.blit(minus_text, (zoom_out_rect.centerx - minus_text.get_width()//2, zoom_out_rect.centery - minus_text.get_height()//2))
+
+    pygame.draw.rect(screen, BLUE_TEXT, zoom_in_rect, border_radius=8)
+    plus_text = font_small.render("+", True, WHITE)
+    screen.blit(plus_text, (zoom_in_rect.centerx - plus_text.get_width()//2, zoom_in_rect.centery - plus_text.get_height()//2))
+
+    # Workspace area
+    workspace_height = workspace_bottom - workspace_top
+    pygame.draw.rect(screen, WORKSPACE_COLOR, (WORKSPACE_LEFT, workspace_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, workspace_height), border_radius=5)
+
+    # Console area - draw BEFORE setting clip
+    pygame.draw.rect(screen, CONSOLE_COLOR, (WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, dynamic_console_height))
+
+    # Draw draggable separator (visual feedback)
+    separator_color = (100, 150, 200) if dragging_separator else (80, 120, 180)
+    pygame.draw.line(screen, separator_color,
+                     (WORKSPACE_LEFT, console_top),
+                     (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top),
+                     3)
+
+    # Draw handle in the middle to show it's draggable
+    handle_x = (WORKSPACE_LEFT + WIDTH - WORKSPACE_RIGHT_MARGIN) // 2
+    pygame.draw.line(screen, separator_color,
+                     (handle_x - 15, console_top - 2),
+                     (handle_x - 15, console_top + 2),
+                     2)
+    pygame.draw.line(screen, separator_color,
+                     (handle_x, console_top - 2),
+                     (handle_x, console_top + 2),
+                     2)
+    pygame.draw.line(screen, separator_color,
+                     (handle_x + 15, console_top - 2),
+                     (handle_x + 15, console_top + 2),
+                     2)
+
+    # Keep placed blocks visually inside the blueprint area so they never draw
+    # on top of the Blox sidebar when resizing or scrolling.
+    workspace_clip = pygame.Rect(
+        WORKSPACE_LEFT,
+        workspace_top,
+        WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN,
+        workspace_height,
+    )
+    screen.set_clip(workspace_clip)
+
+    # Draw placed blocks with scroll and zoom offset applied (BEFORE sidebar so sidebar appears on top)
+    for b in placed_blocks:
+        draw_rect = get_block_view_rect(b)
+        if draw_rect.y + draw_rect.height <= workspace_bottom:
+            original_rect = b.rect
+            b.rect = draw_rect
+            b.draw(screen)
+            b.rect = original_rect
+
+    # Reset clipping before drawing sidebar
+    screen.set_clip(None)
+
+    # Draw sidebar blocks (drawn AFTER placed blocks so they appear on top)
+    for b in sidebar_blocks: b.draw(screen)
+
     # Draw console output with scroll support
     line_height = 17  # Height of each line
-    console_start_y = 470  # Starting Y position
-    console_max_y = 620   # Maximum Y position (460 + 160)
+    console_start_y = console_top + 10  # Starting Y position in console
+    console_max_y = console_bottom  # Maximum Y position
 
     # Set clipping rect for console area to prevent text overflow
-    console_clip = pygame.Rect(200, 460, WIDTH - 220, 160)
+    console_clip = pygame.Rect(WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, dynamic_console_height)
     screen.set_clip(console_clip)
 
     # Draw all lines with scroll offset
@@ -1054,41 +1267,46 @@ while running:
         y_pos = console_start_y + (i * line_height) - console_scroll_offset
 
         # Only draw if within console area
-        if y_pos > 460 and y_pos < console_max_y:
+        if y_pos > console_top and y_pos < console_max_y:
             color = BLUE_TEXT if line.startswith(">") else (GREEN_TEXT if "PASSED" in line or "OK" in line or "SUCCESS" in line or "ready" in line else RED_TEXT)
             try:
-                screen.blit(font_console.render(line, True, color), (210, y_pos))
+                screen.blit(font_console.render(line, True, color), (WORKSPACE_LEFT + 10, y_pos))
             except:
                 pass
 
     # Reset clipping
     screen.set_clip(None)
 
-    for b in sidebar_blocks: b.draw(screen)
-    # Draw placed blocks with scroll offset applied 
-    for b in placed_blocks:
-        # Save original position
-        orig_rect = pygame.Rect(b.rect)
-        # Apply scroll offset to Y coordinate for drawing
-        b.rect.y -= workspace_scroll_offset
-        # Only draw if block is within workspace area (not overlapping console)
-        if b.rect.y + b.rect.height <= 460:  # Don't draw below console area
-            b.draw(screen)
-        # Restore original position
-        b.rect.x = orig_rect.x
-        b.rect.y = orig_rect.y
-
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-            
+
+        elif event.type == pygame.VIDEORESIZE:
+            # Handle window resize event
+            WIDTH, HEIGHT = max(event.size[0], MINIMUM_WIDTH), max(event.size[1], MINIMUM_HEIGHT)
+            screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+            recalculate_ui_positions()
+            clamp_all_blocks_to_workspace()
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_x, mouse_y = event.pos
-            
+
+            # Check for separator drag FIRST (highest priority)
+            if is_mouse_on_separator(mouse_y):
+                dragging_separator = True
+                separator_mouse_offset = mouse_y - console_top
+                continue  # Skip to next event
+
             sidebar_hit = False
             for b in sidebar_blocks:
                 if b.rect.collidepoint(mouse_x, mouse_y):
-                    new_block = Block(b.text, b.color, b.category, mouse_x, mouse_y)
+                    new_block = Block(
+                        b.text,
+                        b.color,
+                        b.category,
+                        int(mouse_x / zoom_scale),
+                        int((mouse_y + workspace_scroll_offset) / zoom_scale),
+                    )
                     new_block.dragging = True
                     dragging_block = new_block
                     offset_x = 0
@@ -1099,7 +1317,8 @@ while running:
             
             if not sidebar_hit:
                 for b in reversed(placed_blocks):
-                    if b.rect.collidepoint(mouse_x, mouse_y):
+                    view_rect = get_block_view_rect(b)
+                    if view_rect.collidepoint(mouse_x, mouse_y):
                         if b.category == "Editable":
                             if editing_block and editing_block != b:
                                 editing_block.is_editing = False
@@ -1107,8 +1326,8 @@ while running:
                             editing_block = b
                             b.dragging = True
                             dragging_block = b
-                            offset_x = mouse_x - b.rect.x
-                            offset_y = mouse_y - b.rect.y
+                            offset_x = mouse_x - view_rect.x
+                            offset_y = mouse_y - view_rect.y
                             break  # Just enter edit mode and mark for potential drag, don't disconnect yet
 
                         # Only disconnect and drag non-editable blocks
@@ -1121,11 +1340,18 @@ while running:
                         b.next_block = None
                         b.dragging = True
                         dragging_block = b
-                        offset_x = mouse_x - b.rect.x
-                        offset_y = mouse_y - b.rect.y
+                        offset_x = mouse_x - view_rect.x
+                        offset_y = mouse_y - view_rect.y
                         break
-                
-                if clear_rect.collidepoint(mouse_x, mouse_y):
+
+                if zoom_in_rect.collidepoint(mouse_x, mouse_y):
+                    zoom_scale = min(ZOOM_MAX, zoom_scale + ZOOM_STEP)
+                elif zoom_out_rect.collidepoint(mouse_x, mouse_y):
+                    zoom_scale = max(ZOOM_MIN, zoom_scale - ZOOM_STEP)
+                elif info_rect.collidepoint(mouse_x, mouse_y):
+                    if detailed_phases:
+                        show_explainability_window(detailed_phases)
+                elif clear_rect.collidepoint(mouse_x, mouse_y):
                     placed_blocks.clear()
                     console_output = ["Workspace cleared."]
                     detailed_phases = {}
@@ -1134,11 +1360,14 @@ while running:
                         editing_block = None
                 elif run_rect.collidepoint(mouse_x, mouse_y):
                     console_output, detailed_phases = evaluate_compiler_logic(placed_blocks)
-                elif info_rect.collidepoint(mouse_x, mouse_y):
-                    if detailed_phases:
-                        show_explainability_window(detailed_phases)
         
         elif event.type == pygame.MOUSEBUTTONUP:
+            # Finalize separator drag
+            if dragging_separator:
+                dragging_separator = False
+                # Clamp all blocks to ensure they fit within new workspace bounds
+                clamp_all_blocks_to_workspace()
+
             if dragging_block:
                 dragging_block.dragging = False
                 dragging_block.update_size()
@@ -1146,13 +1375,13 @@ while running:
                 for other in placed_blocks:
                     if other != dragging_block and other.next_block is None:
                         # Only allow connections if parent block is within bounds
-                        if other.rect.y >= 60 and other.rect.y < 460:
+                        if other.rect.y >= workspace_top and other.rect.y < workspace_bottom:
                             # Check for VERTICAL connection (block below another)
                             if (abs(dragging_block.rect.top - other.rect.bottom) < 20 and
-                                dragging_block.rect.centerx == other.rect.centerx):
+                                abs(dragging_block.rect.centerx - other.rect.centerx) < 20):
                                 # Check if vertical connection would keep block in bounds
                                 new_y = other.rect.bottom + 2
-                                if new_y >= 60 and new_y + dragging_block.rect.height <= 460:  # Stays within workspace
+                                if new_y >= workspace_top and new_y + dragging_block.rect.height <= workspace_bottom:  # Stays within workspace
                                     # Connect vertically - block goes below
                                     other.next_block = dragging_block
                                     other.connection_direction = "vertical"
@@ -1165,8 +1394,8 @@ while running:
                                 # Check if horizontal connection would keep block in bounds
                                 new_x = other.rect.right + 2
                                 new_y = other.rect.y
-                                if (new_x >= 200 and new_x + dragging_block.rect.width <= WIDTH - 20 and
-                                    new_y >= 60 and new_y < 460):  # Stays in bounds
+                                if (new_x >= WORKSPACE_LEFT and new_x + dragging_block.rect.width <= WIDTH - WORKSPACE_RIGHT_MARGIN and
+                                    new_y >= workspace_top and new_y < workspace_bottom):  # Stays in bounds
                                     # Connect horizontally - block goes to the right
                                     other.next_block = dragging_block
                                     other.connection_direction = "horizontal"
@@ -1174,12 +1403,12 @@ while running:
                                     dragging_block.update_position(new_x, new_y)
                                     break
                 
-                if dragging_block.rect.x < 200 and dragging_block not in sidebar_blocks:
+                if (dragging_block.rect.right < WORKSPACE_LEFT and dragging_block not in sidebar_blocks):
                     if dragging_block in placed_blocks:
                         placed_blocks.remove(dragging_block)
 
                 # Remove blocks that go above workspace area
-                if dragging_block in placed_blocks and dragging_block.rect.y < 60:
+                if dragging_block in placed_blocks and dragging_block.rect.bottom < workspace_top:
                     # Disconnect this block and any blocks connected to it
                     if dragging_block.prev_block:
                         dragging_block.prev_block.next_block = None
@@ -1195,7 +1424,7 @@ while running:
                     placed_blocks.remove(dragging_block)
 
                 # Remove blocks that go to the right outside bounds
-                if dragging_block in placed_blocks and dragging_block.rect.x + dragging_block.rect.width > WIDTH - 20:
+                if dragging_block in placed_blocks and dragging_block.rect.x > WIDTH - WORKSPACE_RIGHT_MARGIN:
                     # Disconnect this block and any blocks connected to it
                     if dragging_block.prev_block:
                         dragging_block.prev_block.next_block = None
@@ -1210,7 +1439,7 @@ while running:
                     placed_blocks.remove(dragging_block)
 
                 # Remove blocks that go below console area
-                if dragging_block in placed_blocks and dragging_block.rect.y + dragging_block.rect.height > 460:
+                if dragging_block in placed_blocks and dragging_block.rect.y > workspace_bottom:
                     # Disconnect this block and any blocks connected to it
                     if dragging_block.prev_block:
                         dragging_block.prev_block.next_block = None
@@ -1228,6 +1457,20 @@ while running:
                 dragging_block = None
 
         elif event.type == pygame.MOUSEMOTION:
+            if dragging_separator:
+                new_console_top = event.pos[1] - separator_mouse_offset
+
+                # Clamp console height to valid range
+                new_console_top = max(HEIGHT - MAX_CONSOLE_HEIGHT, new_console_top)
+                new_console_top = min(HEIGHT - MIN_CONSOLE_HEIGHT, new_console_top)
+
+                # Update dynamic height
+                new_height = HEIGHT - new_console_top
+                if new_height != dynamic_console_height:
+                    dynamic_console_height = new_height
+                    # Recalculate UI positions with new console height
+                    recalculate_ui_positions()
+
             if dragging_block:
                 # If dragging an editable block that hasn't been disconnected yet, disconnect it now
                 if dragging_block.category == "Editable" and dragging_block.prev_block is not None:
@@ -1238,18 +1481,25 @@ while running:
                     dragging_block.prev_block = None
                     dragging_block.next_block = None
 
-                dragging_block.rect.x = event.pos[0] - offset_x
-                dragging_block.rect.y = event.pos[1] - offset_y
+                dragging_block.rect.x = int((event.pos[0] - offset_x) / zoom_scale)
+                dragging_block.rect.y = int((event.pos[1] + workspace_scroll_offset - offset_y) / zoom_scale)
 
         elif event.type == pygame.MOUSEWHEEL:
-            # Mouse wheel scrolling for console
+            # Mouse wheel scrolling - Ctrl+Scroll for zoom, regular scroll for console
             mouse_x, mouse_y = pygame.mouse.get_pos()
-            # Check if mouse is over console area
-            if 200 < mouse_x < WIDTH - 20 and 460 < mouse_y < 620:
+
+            # Ctrl+Scroll for zoom in workspace
+            if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                if event.y > 0:  # Scroll up = zoom in
+                    zoom_scale = min(ZOOM_MAX, zoom_scale + ZOOM_STEP)
+                elif event.y < 0:  # Scroll down = zoom out
+                    zoom_scale = max(ZOOM_MIN, zoom_scale - ZOOM_STEP)
+            # Regular scroll in console area
+            elif WORKSPACE_LEFT < mouse_x < WIDTH - WORKSPACE_RIGHT_MARGIN and console_top < mouse_y < console_bottom:
                 if event.y > 0:  # Scroll up
                     console_scroll_offset = max(0, console_scroll_offset - 30)
                 elif event.y < 0:  # Scroll down
-                    max_console_scroll = max(0, (len(console_output) - 9) * 17)
+                    max_console_scroll = max(0, (len(console_output) - 7) * 17)
                     console_scroll_offset = min(console_scroll_offset + 30, max_console_scroll)
         
         elif event.type == pygame.KEYDOWN:

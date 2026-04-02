@@ -1,0 +1,12 @@
+DATE: 04/02/26
+
+Updates:
+- Resizeable window
+- Resizeable blueprint area
+-
+
+To Update:
+- Sound effects
+- Other operators (multiply and divide)
+- Conditional blocks (if-else, looping)
+- OOP
