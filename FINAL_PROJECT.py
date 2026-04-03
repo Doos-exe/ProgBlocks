@@ -65,8 +65,8 @@ font_header = pygame.font.SysFont('Arial', 24, bold=True)
 font_console = pygame.font.SysFont('Consolas', 14)
 
 # Keywords, Operators, Separators
-KEYWORDS = {'digit', 'word', 'bet', 'out', 'adds', 'minus', 'end'}
-OPERATORS = {':', ':=', 'adds', 'minus'}
+KEYWORDS = {'digit', 'word', 'bet', 'out', 'adds', 'minus', 'mul', 'div', 'end'}
+OPERATORS = {':', ':=', 'adds', 'minus', 'mul', 'div'}
 SEPARATORS = {'end'}
 
 # The Blocks of ProgBlocks
@@ -78,6 +78,8 @@ AVAILABLE_BLOCKS = [
     (":=", BLUE_BLOCK, "Operator"),
     ("adds", BLUE_BLOCK, "Operator"),
     ("minus", BLUE_BLOCK, "Operator"),
+    ("mul", BLUE_BLOCK, "Operator"),
+    ("div", BLUE_BLOCK, "Operator"),
     ("end", GRAY_BLOCK, "Separator"),
     ("out", GRAY_BLOCK, "Keyword"),
     ("data", PURPLE_BLOCK, "Editable")
@@ -215,7 +217,7 @@ def get_recovery_strategies(error_type, error_details):
         "lexical_invalid_token": [
             "RECOVERY STRATEGIES:",
             "1. Check token spelling and capitalization",
-            "2. Use valid keywords: digit, word, bet, out, end, :, adds, minus",
+            "2. Use valid keywords: digit, word, bet, out, end, :, adds, minus, mul, div",
             "3. Variable names must start with letter or underscore",
             "4. Numbers must be wrapped in quotes for string/word types",
             "5. Strings must use double quotes: \"hello\"",
@@ -531,7 +533,7 @@ def evaluate_compiler_logic(blocks):
             has_operation = False
             operation = None
 
-            if i + 6 < len(tokens) and tokens[i+2] == ':' and tokens[i+4] in ['adds', 'minus'] and tokens[i+6] == 'end':
+            if i + 6 < len(tokens) and tokens[i+2] == ':' and tokens[i+4] in ['adds', 'minus', 'mul', 'div'] and tokens[i+6] == 'end':
                 has_operation = True
                 operation = tokens[i+4]
             elif i + 4 >= len(tokens) or tokens[i+2] != ':' or tokens[i+4] != 'end':
@@ -645,12 +647,12 @@ def evaluate_compiler_logic(blocks):
                     detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"both operands must be {expected_type}")
                     break
 
-            # Check if minus operation is used with word type (not allowed)
-            if has_operation and operation == 'minus' and expected_type == 'word':
-                results.append(f"Semantic Error [{i+4}]: Minus operation is not supported for word (string) type")
+            # Check if minus/div operation is used with word type (not allowed)
+            if has_operation and operation in ['minus', 'div'] and expected_type == 'word':
+                results.append(f"Semantic Error [{i+4}]: {operation.capitalize()} operation is not supported for word (string) type")
                 error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Minus operation cannot be used with word type at token {i+4}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", "minus operation is only available for digit type, not word type")
+                detailed_phases["semantic"].append(f"ERROR: {operation.capitalize()} operation cannot be used with word type at token {i+4}")
+                detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"{operation.capitalize()} operation is only available for digit type, not word type")
                 break
 
             # Binding variable to value 
@@ -678,6 +680,15 @@ def evaluate_compiler_logic(blocks):
                         variables[var_name] = val1 + val2
                     elif operation == 'minus':
                         variables[var_name] = val1 - val2
+                    elif operation == 'mul':
+                        variables[var_name] = val1 * val2
+                    elif operation == 'div':
+                        if val2 == 0:
+                            results.append(f"Semantic Error [{i+5}]: Division by zero")
+                            error_occurred = True
+                            detailed_phases["semantic"].append(f"ERROR: Division by zero at token {i+5}")
+                            break
+                        variables[var_name] = val1 / val2
                 else:
                     variables[var_name] = val1
 
@@ -697,12 +708,22 @@ def evaluate_compiler_logic(blocks):
 
                     if operation == 'adds':
                         variables[var_name] = val1 + val2
-                    elif operation == 'minus':
+                    elif operation == 'mul':
+                        # For word type, mul repeats the string (need numeric multiplier)
+                        try:
+                            multiplier = int(val2) if isinstance(val2, str) else val2
+                            variables[var_name] = val1 * multiplier
+                        except:
+                            results.append(f"Semantic Error [{i+5}]: String multiplication requires numeric multiplier")
+                            error_occurred = True
+                            detailed_phases["semantic"].append(f"ERROR: String multiplication requires numeric multiplier at token {i+5}")
+                            break
+                    elif operation == 'minus' or operation == 'div':
                         # Minus operation not supported for word type
-                        results.append(f"Semantic Error [{i+4}]: Minus operation is not supported for word (string) type")
+                        results.append(f"Semantic Error [{i+4}]: {operation.capitalize()} operation is not supported for word (string) type")
                         error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Minus operation cannot be used with word type at token {i+4}")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", "minus operation is only available for digit type, not word type")
+                        detailed_phases["semantic"].append(f"ERROR: {operation.capitalize()} operation cannot be used with word type at token {i+4}")
+                        detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"{operation.capitalize()} operation is only available for digit type, not word type")
                         break
                 else:
                     variables[var_name] = val1
@@ -753,7 +774,7 @@ def evaluate_compiler_logic(blocks):
             has_out_operation = False
             operation = None
 
-            if i + 4 < len(tokens) and tokens[i+2] in ['adds', 'minus'] and tokens[i+4] == 'end':
+            if i + 4 < len(tokens) and tokens[i+2] in ['adds', 'minus', 'mul', 'div'] and tokens[i+4] == 'end':
                 # 5-token pattern: out VALUE OP VALUE end
                 has_out_operation = True
                 operation = tokens[i+2]
@@ -833,6 +854,21 @@ def evaluate_compiler_logic(blocks):
                         results.append(f"Semantic Error [{i+1}]: Cannot use minus with mixed types")
                         error_occurred = True
                         detailed_phases["semantic"].append(f"ERROR: Type mismatch in minus operation")
+                        break
+                elif operation == 'mul':
+                    result = val1 * val2
+                elif operation == 'div':
+                    if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+                        if val2 == 0:
+                            results.append(f"Semantic Error [{i+3}]: Division by zero")
+                            error_occurred = True
+                            detailed_phases["semantic"].append(f"ERROR: Division by zero")
+                            break
+                        result = val1 / val2
+                    else:
+                        results.append(f"Semantic Error [{i+2}]: Division operation only works with digits")
+                        error_occurred = True
+                        detailed_phases["semantic"].append(f"ERROR: Division operation only works with digits")
                         break
 
                 output_results.append(f"> {result}")

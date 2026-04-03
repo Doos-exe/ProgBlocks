@@ -1,0 +1,10 @@
+DATE: 04/03/26
+
+Updates:
+- Added mul and div (multiply and divide)
+
+To Update:
+- Logo
+- Sound effects
+- Conditional blocks
+- OOP

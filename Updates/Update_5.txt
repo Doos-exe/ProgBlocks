@@ -3,9 +3,10 @@ DATE: 04/02/26
 Updates:
 - Resizeable window
 - Resizeable blueprint area
--
+- Resizeable terminal area
 
 To Update:
+- Logo
 - Sound effects
 - Other operators (multiply and divide)
 - Conditional blocks (if-else, looping)
