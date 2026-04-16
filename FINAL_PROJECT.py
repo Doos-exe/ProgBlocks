@@ -20,6 +20,7 @@ ORANGE_BLOCK = (255, 140, 0)
 BLUE_BLOCK = (70, 130, 180)
 GRAY_BLOCK = (169, 169, 169)
 PURPLE_BLOCK = (153, 50, 204)
+CYAN_BLOCK = (0, 200, 220)
 CLEAR_BTN_COLOR = (244, 67, 54)
 RUN_BTN_COLOR = (76, 175, 80)
 
@@ -65,7 +66,7 @@ font_header = pygame.font.SysFont('Arial', 24, bold=True)
 font_console = pygame.font.SysFont('Consolas', 14)
 
 # Keywords, Operators, Separators
-KEYWORDS = {'digit', 'word', 'bet', 'out', 'adds', 'minus', 'mul', 'div', 'end'}
+KEYWORDS = {'digit', 'word', 'bet', 'out', 'adds', 'minus', 'mul', 'div', 'end', 'if', 'while', 'for', 'if_end', 'while_end', 'for_end'}
 OPERATORS = {':', ':=', 'adds', 'minus', 'mul', 'div'}
 SEPARATORS = {'end'}
 
@@ -82,7 +83,10 @@ AVAILABLE_BLOCKS = [
     ("div", BLUE_BLOCK, "Operator"),
     ("end", GRAY_BLOCK, "Separator"),
     ("out", GRAY_BLOCK, "Keyword"),
-    ("data", PURPLE_BLOCK, "Editable")
+    ("data", PURPLE_BLOCK, "Editable"),
+    ("if", CYAN_BLOCK, "Conditional"),
+    ("while", CYAN_BLOCK, "Conditional"),
+    ("for", CYAN_BLOCK, "Conditional"),
 ]
 
 class Block:
@@ -94,9 +98,13 @@ class Block:
         self.is_editing = False
         self.next_block = None
         self.prev_block = None
-        self.connection_direction = "vertical"  
-        self.text_surf = None  
-        self.rect = None  
+        self.connection_direction = "vertical"
+        self.text_surf = None
+        self.rect = None
+        # Nesting properties for conditional blocks
+        self.body_blocks = []  # Blocks nested inside this conditional
+        self.parent_conditional = None  # Reference to parent conditional if nested
+        self.c_depth = 0  # Nesting depth for visual indentation
         self.update_size()
         self.rect = pygame.Rect(x, y, self.width, self.height)
         self.dragging = False
@@ -117,32 +125,110 @@ class Block:
             self.rect.height = self.height
 
     def draw(self, surface):
-        pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
-        if self.is_editing:
-            pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
-        try:
-            if self.text_surf:
-                text_rect = self.text_surf.get_rect(center=self.rect.center)
-                surface.blit(self.text_surf, text_rect)
+        # For conditional blocks in sidebar: draw as normal rounded rectangle
+        if self.category == "Conditional" and self.is_template:
+            pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+            if self.is_editing:
+                pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
+            try:
+                if self.text_surf:
+                    text_rect = self.text_surf.get_rect(center=self.rect.center)
+                    surface.blit(self.text_surf, text_rect)
+                else:
+                    text_display = self.text + ("|" if self.is_editing else "")
+                    text_surf = font_small.render(text_display, True, WHITE)
+                    text_rect = text_surf.get_rect(center=self.rect.center)
+                    surface.blit(text_surf, text_rect)
+            except:
+                pass
+        # For conditional blocks in blueprint: draw C-shape only if has nested blocks
+        elif self.category == "Conditional" and not self.is_template:
+            # Only expand to C-shape if has body blocks (nested vertical blocks)
+            if self.body_blocks:
+                line_width = 3
+                header_height = self.rect.height  # Use original height for header
+                body_height = sum(b.rect.height + 2 for b in self.body_blocks) + 20
+                total_height = header_height + body_height
+
+                # Draw header (top bar)
+                pygame.draw.rect(surface, self.color, (self.rect.x, self.rect.y, self.rect.width, header_height))
+
+                # Draw left vertical arm
+                pygame.draw.line(surface, self.color,
+                               (self.rect.x, self.rect.y),
+                               (self.rect.x, self.rect.y + total_height),
+                               line_width)
+
+                # Draw right vertical arm
+                pygame.draw.line(surface, self.color,
+                               (self.rect.x + self.rect.width, self.rect.y),
+                               (self.rect.x + self.rect.width, self.rect.y + total_height),
+                               line_width)
+
+                # Draw bottom bar
+                pygame.draw.line(surface, self.color,
+                               (self.rect.x, self.rect.y + total_height),
+                               (self.rect.x + self.rect.width, self.rect.y + total_height),
+                               line_width)
             else:
-                text_display = self.text + ("|" if self.is_editing else "")
-                text_surf = font_small.render(text_display, True, WHITE)
-                text_rect = text_surf.get_rect(center=self.rect.center)
-                surface.blit(text_surf, text_rect)
-        except:
-            pass
+                # No nested blocks: draw as normal rounded rectangle
+                pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+
+            if self.is_editing:
+                pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
+
+            # Draw text
+            try:
+                if self.text_surf:
+                    text_rect = self.text_surf.get_rect(center=self.rect.center)
+                    surface.blit(self.text_surf, text_rect)
+                else:
+                    text_display = self.text + ("|" if self.is_editing else "")
+                    text_surf = font_small.render(text_display, True, WHITE)
+                    text_rect = text_surf.get_rect(center=self.rect.center)
+                    surface.blit(text_surf, text_rect)
+            except:
+                pass
+        else:
+            # Regular rounded rectangle for non-conditional blocks
+            pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+            if self.is_editing:
+                pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
+            try:
+                if self.text_surf:
+                    text_rect = self.text_surf.get_rect(center=self.rect.center)
+                    surface.blit(self.text_surf, text_rect)
+                else:
+                    text_display = self.text + ("|" if self.is_editing else "")
+                    text_surf = font_small.render(text_display, True, WHITE)
+                    text_rect = text_surf.get_rect(center=self.rect.center)
+                    surface.blit(text_surf, text_rect)
+            except:
+                pass
 
     def update_position(self, x, y):
         self.rect.x = x
         self.rect.y = y
+        # Update nested blocks (body blocks) position - place them inside the C-shape
+        if self.body_blocks:
+            body_y = self.rect.bottom + 10  # Start below the header
+            body_x = self.rect.x + 20  # Indented from left arm
+            for body_block in self.body_blocks:
+                body_block.update_position(body_x, body_y)
+                body_y = body_block.rect.bottom + 2
+        # Update next block in chain
         if self.next_block:
-            # Binding of blocks
             if self.connection_direction == "horizontal":
                 # Sticking the block to the right
                 self.next_block.update_position(self.rect.right + 2, self.rect.y)
             else:
-                # Sticking the block below
-                self.next_block.update_position(self.rect.x, self.rect.bottom + 2)
+                # Sticking the block below - account for C-shape height
+                if self.category == "Conditional" and self.body_blocks:
+                    body_height = sum(b.rect.height + 2 for b in self.body_blocks) + 20
+                    next_y = self.rect.y + self.rect.height + body_height + 2
+                else:
+                    next_y = self.rect.y + self.rect.height + 40 + 2
+                self.next_block.update_position(self.rect.x, next_y)
 
 # ---- THE COMPILER ----
 """This function checks if the token is valid"""
@@ -271,7 +357,104 @@ def get_recovery_strategies(error_type, error_details):
     return strategies.get(error_type, ["No recovery strategies available for this error"])
 
 
-"""This function is for the compiler or block logic"""
+"""Helper functions for conditional nesting"""
+def is_block_inside_conditional(block, conditional_block):
+    """Check if block is spatially inside a conditional block's body area (inside the C-shape)"""
+    if conditional_block.category != "Conditional":
+        return False
+
+    # Calculate the height of the C-shape based on nested blocks
+    if conditional_block.body_blocks:
+        body_height = sum(b.rect.height + 2 for b in conditional_block.body_blocks) + 20
+        total_height = conditional_block.rect.height + body_height
+    else:
+        total_height = conditional_block.rect.height + 40
+
+    # Body area: inside the C-shape
+    # X: between left and right arms (with some margin for positioning)
+    body_left = conditional_block.rect.x + 10
+    body_right = conditional_block.rect.x + conditional_block.rect.width - 10
+    # Y: below the header bar and above the bottom bar
+    body_top = conditional_block.rect.y + conditional_block.rect.height + 5
+    body_bottom = conditional_block.rect.y + total_height - 5
+
+    # Check if block's center is within body area
+    block_center_x = block.rect.centerx
+    block_center_y = block.rect.centery
+
+    return (body_left <= block_center_x <= body_right and
+            body_top <= block_center_y <= body_bottom)
+
+
+def reorganize_nesting(placed_blocks):
+    """Reorganize blocks into proper nesting hierarchy based on spatial position"""
+    # First, clear all parent-child relationships to reset
+    for block in placed_blocks:
+        if block not in placed_blocks or block.parent_conditional is not None:
+            if block.parent_conditional:
+                if block in block.parent_conditional.body_blocks:
+                    block.parent_conditional.body_blocks.remove(block)
+                block.parent_conditional = None
+
+    # Now detect which blocks should be nested in which conditionals
+    for conditional in placed_blocks:
+        if conditional.category == "Conditional":
+            conditional.body_blocks.clear()
+
+    for block in placed_blocks:
+        if block.category == "Conditional":
+            continue  # Skip conditional blocks, they can't be nested in themselves
+
+        # Find which conditional (if any) contains this block
+        for conditional in placed_blocks:
+            if conditional.category == "Conditional" and conditional != block:
+                if is_block_inside_conditional(block, conditional):
+                    # Check if already has a parent
+                    if block.parent_conditional:
+                        if block in block.parent_conditional.body_blocks:
+                            block.parent_conditional.body_blocks.remove(block)
+
+                    block.parent_conditional = conditional
+                    if block not in conditional.body_blocks:
+                        conditional.body_blocks.append(block)
+                    break
+
+
+def extract_tokens_with_nesting(blocks):
+    """Extract tokens from blocks while preserving conditional nesting hierarchy"""
+    tokens = []
+
+    def traverse_block(block):
+        """Recursive traversal of block hierarchy"""
+        if block.is_template or block in [b for cond in blocks if cond.category == "Conditional" for b in cond.body_blocks if cond.parent_conditional]:
+            return
+
+        tokens.append(block.text.strip())
+
+        # If this is a conditional, add its body tokens
+        if block.category == "Conditional" and block.body_blocks:
+            for body_block in block.body_blocks:
+                traverse_block(body_block)
+            # Add the corresponding end token
+            end_keyword = block.text + "_end"
+            tokens.append(end_keyword)
+
+        # Then process next block in chain
+        if block.next_block:
+            traverse_block(block.next_block)
+
+    # Find all chain starts (blocks with no parent conditional and no prev_block)
+    chain_starts = [b for b in blocks if b.prev_block is None and b.parent_conditional is None and not b.is_template]
+    chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
+
+    # Process each chain
+    for start_block in chain_starts:
+        traverse_block(start_block)
+
+    return tokens
+
+
+
 def evaluate_compiler_logic(blocks):
     # No blocks in the blueprint area
     if not blocks:
@@ -283,8 +466,11 @@ def evaluate_compiler_logic(blocks):
     if not valid_blocks:
         return ["Error: No blocks in valid blueprint area.", "Status: COMPILATION FAILED"], {}
 
-    # Initial block detection
-    chain_starts = [b for b in valid_blocks if b.prev_block is None]
+    # Reorganize nesting first
+    reorganize_nesting(valid_blocks)
+
+    # Initial block detection - only get blocks with no parent conditional and no prev block
+    chain_starts = [b for b in valid_blocks if b.prev_block is None and b.parent_conditional is None]
 
     if not chain_starts:
         return ["Error: No valid blocks found.", "Status: COMPILATION FAILED"], {}
@@ -307,8 +493,8 @@ def evaluate_compiler_logic(blocks):
     for chain in all_chains:
         all_blocks.extend(chain)
 
-    # Tokenization of Block Texts
-    tokens = [block.text.strip() for block in all_blocks if block.text and block.text.strip()]
+    # Tokenization of Block Texts using hierarchical extraction
+    tokens = extract_tokens_with_nesting(valid_blocks)
 
     if not tokens:
         return ["Error: No valid tokens.", "Status: COMPILATION FAILED"], {}
@@ -1489,6 +1675,9 @@ while running:
                     dragging_block.prev_block = None
                     dragging_block.next_block = None
                     placed_blocks.remove(dragging_block)
+
+                # Reorganize nesting based on spatial position after all blocks are placed
+                reorganize_nesting(placed_blocks)
 
                 dragging_block = None
 

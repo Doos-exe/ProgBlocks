@@ -1,0 +1,12 @@
+DATE: 04/16/26
+
+Updates:
+- Added if, while, and for
+
+To Update:
+- Conditional blocks
+  - Add new operators for conditional
+  - Fix the conditional blocks
+- Logo
+- Sound effects
+- OOP
