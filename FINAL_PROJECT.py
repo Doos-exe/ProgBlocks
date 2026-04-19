@@ -159,13 +159,7 @@ class Block:
                                (self.rect.x, self.rect.y + total_height),
                                line_width)
 
-                # Draw right vertical arm
-                pygame.draw.line(surface, self.color,
-                               (self.rect.x + self.rect.width, self.rect.y),
-                               (self.rect.x + self.rect.width, self.rect.y + total_height),
-                               line_width)
-
-                # Draw bottom bar
+                # Draw bottom bar (left side only, indicating open right)
                 pygame.draw.line(surface, self.color,
                                (self.rect.x, self.rect.y + total_height),
                                (self.rect.x + self.rect.width, self.rect.y + total_height),
@@ -211,7 +205,7 @@ class Block:
         self.rect.y = y
         # Update nested blocks (body blocks) position - place them inside the C-shape
         if self.body_blocks:
-            body_y = self.rect.bottom + 10  # Start below the header
+            body_y = self.rect.y + self.rect.height + 5  # Start 5px below the header
             body_x = self.rect.x + 20  # Indented from left arm
             for body_block in self.body_blocks:
                 body_block.update_position(body_x, body_y)
@@ -370,13 +364,18 @@ def is_block_inside_conditional(block, conditional_block):
     else:
         total_height = conditional_block.rect.height + 40
 
+    # Add buffer space to account for blocks being added/repositioned
+    # This allows the third+ blocks to be properly detected as inside the conditional
+    buffer_height = 100
+    total_height_with_buffer = total_height + buffer_height
+
     # Body area: inside the C-shape
     # X: between left and right arms (with some margin for positioning)
     body_left = conditional_block.rect.x + 10
     body_right = conditional_block.rect.x + conditional_block.rect.width - 10
-    # Y: below the header bar and above the bottom bar
+    # Y: below the header bar and above the bottom bar (with buffer)
     body_top = conditional_block.rect.y + conditional_block.rect.height + 5
-    body_bottom = conditional_block.rect.y + total_height - 5
+    body_bottom = conditional_block.rect.y + total_height_with_buffer
 
     # Check if block's center is within body area
     block_center_x = block.rect.centerx
@@ -418,6 +417,27 @@ def reorganize_nesting(placed_blocks):
                     if block not in conditional.body_blocks:
                         conditional.body_blocks.append(block)
                     break
+
+    # After reorganizing, clear chain connections for nested blocks and reposition conditionals
+    for block in placed_blocks:
+        if block.parent_conditional is not None:
+            # This block is nested - disconnect it from any chain (including parent conditional)
+            if block.prev_block is not None:
+                if block.prev_block != block.parent_conditional:
+                    # If prev_block is not the parent conditional, disconnect properly
+                    block.prev_block.next_block = None
+                else:
+                    # If prev_block IS the parent conditional, still disconnect
+                    block.prev_block.next_block = None
+                block.prev_block = None
+            if block.next_block is not None:
+                block.next_block.prev_block = None
+                block.next_block = None
+
+    # Update positions of all conditionals to reposition body blocks
+    for conditional in placed_blocks:
+        if conditional.category == "Conditional":
+            conditional.update_position(conditional.rect.x, conditional.rect.y)
 
 
 def extract_tokens_with_nesting(blocks):

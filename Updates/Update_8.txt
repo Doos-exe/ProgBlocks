@@ -1,0 +1,12 @@
+DATE: 04/19/26
+
+Updates:
+- Fixed the conditional blocks
+
+To Update:
+- Conditional Blocks
+  - Rename
+  - Add new operators for conditional
+- Logo
+- Sound effects
+- OOP
