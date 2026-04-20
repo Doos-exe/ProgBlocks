@@ -49,7 +49,7 @@ WORKSPACE_RIGHT_MARGIN = 20
 
 # Separator configuration for draggable console
 SEPARATOR_HEIGHT = 10  # Draggable zone height (±5px from separator line)
-MIN_CONSOLE_HEIGHT = 60  # Minimum console height when dragged
+MIN_CONSOLE_HEIGHT = 60  # Minimum console height when draggedl
 MAX_CONSOLE_HEIGHT = int(ORIGINAL_HEIGHT * 0.75)  # Max before workspace becomes too small
 
 workspace_top = HEADER_HEIGHT
@@ -365,7 +365,7 @@ def is_block_inside_conditional(block, conditional_block):
         total_height = conditional_block.rect.height + 40
 
     # Add buffer space to account for blocks being added/repositioned
-    # This allows the third+ blocks to be properly detected as inside the conditional
+    # This allows multiple blocks to be properly detected as inside the conditional
     buffer_height = 100
     total_height_with_buffer = total_height + buffer_height
 
