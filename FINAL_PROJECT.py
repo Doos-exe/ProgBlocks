@@ -6,23 +6,29 @@ pygame.init()
 
 # ---- UI/UX Design ----
 # Background Colors
-BG_COLOR = (211, 211, 211)
-WORKSPACE_COLOR = (245, 245, 245)
-CONSOLE_COLOR = (0, 0, 0)
-WHITE = (255, 255, 255)
+BG_COLOR = (10, 12, 20)
+WORKSPACE_COLOR = (14, 17, 30)
+CONSOLE_COLOR = (8, 10, 16)
+WHITE = (220, 225, 240)
 BLACK = (0, 0, 0)
-GREEN_TEXT = (0, 255, 0)
-RED_TEXT = (255, 50, 50)
-BLUE_TEXT = (100, 149, 237)
+GREEN_TEXT = (0, 240, 120)
+RED_TEXT = (255, 55, 75)
+BLUE_TEXT = (0, 180, 255)
+
+# Additional UI Colors
+SIDEBAR_BG = (11, 13, 22)
+HEADER_BG = (8, 10, 18)
+ACCENT_COLOR = (0, 190, 255)
+GRID_DOT_COLOR = (22, 28, 48)
 
 # Block Colors
-ORANGE_BLOCK = (255, 140, 0)
-BLUE_BLOCK = (70, 130, 180)
-GRAY_BLOCK = (169, 169, 169)
-PURPLE_BLOCK = (153, 50, 204)
-CYAN_BLOCK = (0, 200, 220)
-CLEAR_BTN_COLOR = (244, 67, 54)
-RUN_BTN_COLOR = (76, 175, 80)
+ORANGE_BLOCK = (255, 90, 25)
+BLUE_BLOCK = (0, 140, 255)
+GRAY_BLOCK = (65, 80, 100)
+PURPLE_BLOCK = (155, 35, 235)
+CYAN_BLOCK = (0, 205, 225)
+CLEAR_BTN_COLOR = (210, 35, 60)
+RUN_BTN_COLOR = (0, 190, 85)
 
 # Screen Setup
 ORIGINAL_WIDTH, ORIGINAL_HEIGHT = 900, 650
@@ -61,9 +67,10 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
 pygame.display.set_caption("ProgBlocks: Block and Compile!")
 
 # Fonts
-font_small = pygame.font.SysFont('Arial', 16, bold=True)
-font_header = pygame.font.SysFont('Arial', 24, bold=True)
-font_console = pygame.font.SysFont('Consolas', 14)
+font_small = pygame.font.SysFont('Consolas', 14, bold=True)
+font_header = pygame.font.SysFont('Consolas', 18, bold=True)
+font_console = pygame.font.SysFont('Consolas', 13)
+font_label = pygame.font.SysFont('Consolas', 10, bold=True)
 
 # Keywords, Operators, Separators
 KEYWORDS = {'digit', 'word', 'bet', 'out', 'adds', 'minus', 'mul', 'div', 'end', 'if', 'while', 'for', 'if_end', 'while_end', 'for_end'}
@@ -125,80 +132,68 @@ class Block:
             self.rect.height = self.height
 
     def draw(self, surface):
-        # For conditional blocks in sidebar: draw as normal rounded rectangle
+        r, g, b = self.color
+        dark_body = (max(0, r - 85), max(0, g - 85), max(0, b - 85))
+        highlight = (min(255, r + 50), min(255, g + 50), min(255, b + 50))
+
         if self.category == "Conditional" and self.is_template:
-            pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+            pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
+            pygame.draw.rect(surface, self.color, self.rect, 1, border_radius=4)
+            pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
             if self.is_editing:
-                pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
-            try:
-                if self.text_surf:
-                    text_rect = self.text_surf.get_rect(center=self.rect.center)
-                    surface.blit(self.text_surf, text_rect)
-                else:
-                    text_display = self.text + ("|" if self.is_editing else "")
-                    text_surf = font_small.render(text_display, True, WHITE)
-                    text_rect = text_surf.get_rect(center=self.rect.center)
-                    surface.blit(text_surf, text_rect)
-            except:
-                pass
-        # For conditional blocks in blueprint: draw C-shape only if has nested blocks
+                pygame.draw.rect(surface, ACCENT_COLOR, self.rect, 2, border_radius=4)
+            self._draw_text(surface, self.rect)
+
         elif self.category == "Conditional" and not self.is_template:
-            # Only expand to C-shape if has body blocks (nested vertical blocks)
             if self.body_blocks:
                 line_width = 3
-                header_height = self.rect.height  # Use original height for header
+                header_height = self.rect.height
                 body_height = sum(b.rect.height + 2 for b in self.body_blocks) + 20
                 total_height = header_height + body_height
 
-                # Draw header (top bar)
-                pygame.draw.rect(surface, self.color, (self.rect.x, self.rect.y, self.rect.width, header_height))
+                pygame.draw.rect(surface, dark_body, (self.rect.x, self.rect.y, self.rect.width, header_height), border_radius=4)
+                pygame.draw.rect(surface, self.color, (self.rect.x, self.rect.y, self.rect.width, header_height), 1, border_radius=4)
+                pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, header_height))
+                pygame.draw.line(surface, highlight, (self.rect.x + 4, self.rect.y + 1), (self.rect.right - 1, self.rect.y + 1), 1)
 
-                # Draw left vertical arm
                 pygame.draw.line(surface, self.color,
                                (self.rect.x, self.rect.y),
                                (self.rect.x, self.rect.y + total_height),
                                line_width)
-
-                # Draw bottom bar (left side only, indicating open right)
                 pygame.draw.line(surface, self.color,
                                (self.rect.x, self.rect.y + total_height),
                                (self.rect.x + self.rect.width, self.rect.y + total_height),
                                line_width)
             else:
-                # No nested blocks: draw as normal rounded rectangle
-                pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+                pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
+                pygame.draw.rect(surface, self.color, self.rect, 1, border_radius=4)
+                pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
 
             if self.is_editing:
-                pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
+                pygame.draw.rect(surface, ACCENT_COLOR, self.rect, 2, border_radius=4)
+            self._draw_text(surface, self.rect)
 
-            # Draw text
-            try:
-                if self.text_surf:
-                    text_rect = self.text_surf.get_rect(center=self.rect.center)
-                    surface.blit(self.text_surf, text_rect)
-                else:
-                    text_display = self.text + ("|" if self.is_editing else "")
-                    text_surf = font_small.render(text_display, True, WHITE)
-                    text_rect = text_surf.get_rect(center=self.rect.center)
-                    surface.blit(text_surf, text_rect)
-            except:
-                pass
         else:
-            # Regular rounded rectangle for non-conditional blocks
-            pygame.draw.rect(surface, self.color, self.rect, border_radius=8)
+            pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
+            pygame.draw.rect(surface, self.color, self.rect, 1, border_radius=4)
+            pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
+            pygame.draw.line(surface, highlight, (self.rect.x + 4, self.rect.y + 1), (self.rect.right - 1, self.rect.y + 1), 1)
             if self.is_editing:
-                pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
-            try:
-                if self.text_surf:
-                    text_rect = self.text_surf.get_rect(center=self.rect.center)
-                    surface.blit(self.text_surf, text_rect)
-                else:
-                    text_display = self.text + ("|" if self.is_editing else "")
-                    text_surf = font_small.render(text_display, True, WHITE)
-                    text_rect = text_surf.get_rect(center=self.rect.center)
-                    surface.blit(text_surf, text_rect)
-            except:
-                pass
+                pygame.draw.rect(surface, ACCENT_COLOR, self.rect, 2, border_radius=4)
+            self._draw_text(surface, self.rect)
+
+    def _draw_text(self, surface, rect):
+        try:
+            if self.text_surf:
+                text_rect = self.text_surf.get_rect(center=rect.center)
+                surface.blit(self.text_surf, text_rect)
+            else:
+                text_display = self.text + ("|" if self.is_editing else "")
+                text_surf = font_small.render(text_display, True, WHITE)
+                text_rect = text_surf.get_rect(center=rect.center)
+                surface.blit(text_surf, text_rect)
+        except:
+            pass
 
     def update_position(self, x, y):
         self.rect.x = x
@@ -1172,11 +1167,13 @@ def show_explainability_window(detailed_phases):
         content_max_y = expl_height - 40
 
         # Draw header
-        header_text = font_header.render("COMPILER ANALYSIS PHASES", True, BLUE_TEXT)
+        pygame.draw.rect(detail_window, HEADER_BG, (0, 0, expl_width, 55))
+        header_text = font_header.render("COMPILER ANALYSIS PHASES", True, ACCENT_COLOR)
         detail_window.blit(header_text, (20, 15))
 
-        # Draw separator line below header
-        pygame.draw.line(detail_window, BLUE_TEXT, (20, 50), (expl_width - 20, 50), 1)
+        # Draw separator line below header with neon glow
+        pygame.draw.line(detail_window, (0, 50, 80), (0, 53), (expl_width, 53), 4)
+        pygame.draw.line(detail_window, ACCENT_COLOR, (0, 54), (expl_width, 54), 2)
 
         y_pos = 70  # Start lower with separator
         line_height = 18
@@ -1264,8 +1261,9 @@ def show_explainability_window(detailed_phases):
                 y_pos += line_height
 
         # Draw scroll instructions at the bottom with separator
-        pygame.draw.line(detail_window, BLUE_TEXT, (20, expl_height - 40), (expl_width - 20, expl_height - 40), 1)
-        scroll_text = font_small.render("Scroll: ScrollWheel | Close: ESC", True, BLUE_TEXT)
+        pygame.draw.line(detail_window, (0, 50, 80), (0, expl_height - 43), (expl_width, expl_height - 43), 4)
+        pygame.draw.line(detail_window, ACCENT_COLOR, (0, expl_height - 41), (expl_width, expl_height - 41), 2)
+        scroll_text = font_small.render("  Scroll: ScrollWheel  |  Close: ESC", True, (70, 90, 120))
         detail_window.blit(scroll_text, (20, expl_height - 30))
 
         pygame.display.flip()
@@ -1289,7 +1287,7 @@ def show_explainability_window(detailed_phases):
         clock.tick(60)
 
     pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
-    pygame.display.set_caption("ProgBlocks: Official Logic Edition")
+    pygame.display.set_caption("ProgBlocks: Block and Compile!")
 
 # ---- HELPER FUNCTIONS FOR RESIZABLE WINDOW ----
 def recalculate_ui_positions():
@@ -1412,62 +1410,82 @@ clock = pygame.time.Clock()
 while running:
     screen.fill(BG_COLOR)
 
+    # Sidebar background panel
+    pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, WORKSPACE_LEFT - 1, HEIGHT))
+
     # Draw header background
-    pygame.draw.rect(screen, WHITE, (0, 0, WIDTH, HEADER_HEIGHT))
-    pygame.draw.line(screen, BLACK, (0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT), 1)
+    pygame.draw.rect(screen, HEADER_BG, (0, 0, WIDTH, HEADER_HEIGHT))
+    # Neon accent border at bottom of header
+    pygame.draw.line(screen, (0, 50, 80), (0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT), 4)
+    pygame.draw.line(screen, ACCENT_COLOR, (0, HEADER_HEIGHT - 1), (WIDTH, HEADER_HEIGHT - 1), 2)
+    # Sidebar/workspace vertical separator (below header)
+    pygame.draw.line(screen, ACCENT_COLOR, (WORKSPACE_LEFT - 1, HEADER_HEIGHT), (WORKSPACE_LEFT - 1, HEIGHT), 1)
 
-    # Title and labels
-    screen.blit(font_header.render("Blox", True, BLACK), (20, 12))
-    screen.blit(font_header.render("Blueprint", True, BLACK), (WORKSPACE_LEFT + 10, 12))
+    # Title: "Prog" white + "Blocks" accent
+    prog_surf = font_header.render("Prog", True, WHITE)
+    blocks_surf = font_header.render("Blocks", True, ACCENT_COLOR)
+    screen.blit(prog_surf, (16, 15))
+    screen.blit(blocks_surf, (16 + prog_surf.get_width(), 15))
+    screen.blit(font_header.render("Blueprint", True, (55, 70, 100)), (WORKSPACE_LEFT + 10, 15))
 
-    # Draw buttons with labels
+    # Sidebar palette label
+    screen.blit(font_label.render("PALETTE", True, (45, 55, 80)), (10, HEADER_HEIGHT - 13))
+
+    # Draw buttons with tech border style (dark body + colored border)
     buttons_info = [
         (info_rect, "INFO", BLUE_TEXT),
         (clear_rect, "CLEAR", CLEAR_BTN_COLOR),
         (run_rect, "RUN", RUN_BTN_COLOR),
     ]
     for rect, label, color in buttons_info:
-        pygame.draw.rect(screen, color, rect, border_radius=8)
-        text = font_small.render(label, True, WHITE)
+        dark_btn = (max(0, color[0] - 110), max(0, color[1] - 110), max(0, color[2] - 110))
+        pygame.draw.rect(screen, dark_btn, rect, border_radius=4)
+        pygame.draw.rect(screen, color, rect, 1, border_radius=4)
+        text = font_small.render(label, True, color)
         screen.blit(text, (rect.centerx - text.get_width()//2, rect.centery - text.get_height()//2))
 
     # Zoom buttons
-    pygame.draw.rect(screen, BLUE_TEXT, zoom_out_rect, border_radius=8)
-    minus_text = font_small.render("-", True, WHITE)
+    pygame.draw.rect(screen, (10, 18, 30), zoom_out_rect, border_radius=4)
+    pygame.draw.rect(screen, ACCENT_COLOR, zoom_out_rect, 1, border_radius=4)
+    minus_text = font_small.render("-", True, ACCENT_COLOR)
     screen.blit(minus_text, (zoom_out_rect.centerx - minus_text.get_width()//2, zoom_out_rect.centery - minus_text.get_height()//2))
 
-    pygame.draw.rect(screen, BLUE_TEXT, zoom_in_rect, border_radius=8)
-    plus_text = font_small.render("+", True, WHITE)
+    pygame.draw.rect(screen, (10, 18, 30), zoom_in_rect, border_radius=4)
+    pygame.draw.rect(screen, ACCENT_COLOR, zoom_in_rect, 1, border_radius=4)
+    plus_text = font_small.render("+", True, ACCENT_COLOR)
     screen.blit(plus_text, (zoom_in_rect.centerx - plus_text.get_width()//2, zoom_in_rect.centery - plus_text.get_height()//2))
+
+    # Zoom level indicator between zoom buttons and INFO button
+    zoom_lbl = font_label.render(f"{int(zoom_scale * 100)}%", True, (70, 90, 120))
+    screen.blit(zoom_lbl, (zoom_in_rect.right + 6, zoom_in_rect.centery - zoom_lbl.get_height() // 2))
 
     # Workspace area
     workspace_height = workspace_bottom - workspace_top
-    pygame.draw.rect(screen, WORKSPACE_COLOR, (WORKSPACE_LEFT, workspace_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, workspace_height), border_radius=5)
+    pygame.draw.rect(screen, WORKSPACE_COLOR, (WORKSPACE_LEFT, workspace_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, workspace_height))
+
+    # Dot grid in workspace
+    screen.set_clip(pygame.Rect(WORKSPACE_LEFT, workspace_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, workspace_height))
+    dot_offset_y = int(workspace_scroll_offset) % 20
+    for gx in range(WORKSPACE_LEFT + 10, WIDTH - WORKSPACE_RIGHT_MARGIN, 20):
+        for gy in range(workspace_top + (20 - dot_offset_y) % 20, workspace_bottom, 20):
+            pygame.draw.circle(screen, GRID_DOT_COLOR, (gx, gy), 1)
+    screen.set_clip(None)
 
     # Console area - draw BEFORE setting clip
     pygame.draw.rect(screen, CONSOLE_COLOR, (WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, dynamic_console_height))
+    # Console header bar
+    pygame.draw.rect(screen, (12, 14, 24), (WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, 20))
+    pygame.draw.line(screen, (25, 35, 55), (WORKSPACE_LEFT, console_top + 20), (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top + 20), 1)
+    console_lbl = font_label.render("OUTPUT", True, ACCENT_COLOR)
+    screen.blit(console_lbl, (WORKSPACE_LEFT + 10, console_top + 5))
 
-    # Draw draggable separator (visual feedback)
-    separator_color = (100, 150, 200) if dragging_separator else (80, 120, 180)
-    pygame.draw.line(screen, separator_color,
-                     (WORKSPACE_LEFT, console_top),
-                     (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top),
-                     3)
-
-    # Draw handle in the middle to show it's draggable
+    # Separator with neon glow effect
+    sep_color = (0, 220, 255) if dragging_separator else ACCENT_COLOR
+    pygame.draw.line(screen, (0, 50, 80), (WORKSPACE_LEFT, console_top), (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top), 5)
+    pygame.draw.line(screen, sep_color, (WORKSPACE_LEFT, console_top), (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top), 2)
     handle_x = (WORKSPACE_LEFT + WIDTH - WORKSPACE_RIGHT_MARGIN) // 2
-    pygame.draw.line(screen, separator_color,
-                     (handle_x - 15, console_top - 2),
-                     (handle_x - 15, console_top + 2),
-                     2)
-    pygame.draw.line(screen, separator_color,
-                     (handle_x, console_top - 2),
-                     (handle_x, console_top + 2),
-                     2)
-    pygame.draw.line(screen, separator_color,
-                     (handle_x + 15, console_top - 2),
-                     (handle_x + 15, console_top + 2),
-                     2)
+    for hx in [handle_x - 15, handle_x, handle_x + 15]:
+        pygame.draw.circle(screen, sep_color, (hx, console_top), 2)
 
     # Keep placed blocks visually inside the blueprint area so they never draw
     # on top of the Blox sidebar when resizing or scrolling.
@@ -1496,7 +1514,7 @@ while running:
 
     # Draw console output with scroll support
     line_height = 17  # Height of each line
-    console_start_y = console_top + 10  # Starting Y position in console
+    console_start_y = console_top + 24  # Starting Y position in console (offset for OUTPUT header bar)
     console_max_y = console_bottom  # Maximum Y position
 
     # Set clipping rect for console area to prevent text overflow
@@ -1510,7 +1528,16 @@ while running:
 
         # Only draw if within console area
         if y_pos > console_top and y_pos < console_max_y:
-            color = BLUE_TEXT if line.startswith(">") else (GREEN_TEXT if "PASSED" in line or "OK" in line or "SUCCESS" in line or "ready" in line else RED_TEXT)
+            if line.startswith(">"):
+                color = ACCENT_COLOR
+            elif "PASSED" in line or "OK" in line or "SUCCESS" in line or "ready" in line or "Drag" in line or "cleared" in line:
+                color = GREEN_TEXT
+            elif "Error" in line or "FAILED" in line:
+                color = RED_TEXT
+            elif "Compiled Output:" in line:
+                color = BLUE_TEXT
+            else:
+                color = (155, 165, 185)
             try:
                 screen.blit(font_console.render(line, True, color), (WORKSPACE_LEFT + 10, y_pos))
             except:
