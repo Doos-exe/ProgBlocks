@@ -103,6 +103,9 @@ class Block:
         self.category = category
         self.is_template = is_template
         self.is_editing = False
+        self.keyword_part_width = 55
+        self.condition_blocks = []   # blocks dropped into the condition slot
+        self.in_condition_of = None  # parent Conditional if this block is in a condition slot
         self.next_block = None
         self.prev_block = None
         self.connection_direction = "vertical"
@@ -118,11 +121,24 @@ class Block:
 
     def update_size(self):
         try:
-            text_display = self.text + ("|" if self.is_editing else "")
-            text_surf = font_small.render(text_display, True, WHITE)
-            self.width = max(80, text_surf.get_width() + 20)
-            self.height = 35
-            self.text_surf = text_surf  
+            if self.category == "Conditional":
+                kw_surf = font_small.render(self.text, True, WHITE)
+                self.keyword_part_width = max(55, kw_surf.get_width() + 20)
+                if self.is_template:
+                    self.width = self.keyword_part_width
+                elif self.condition_blocks:
+                    cond_w = sum(cb.width + 2 for cb in self.condition_blocks) + 10
+                    self.width = self.keyword_part_width + max(10, cond_w)
+                else:
+                    self.width = self.keyword_part_width + 120
+                self.height = 35
+                self.text_surf = kw_surf
+            else:
+                text_display = self.text + ("|" if self.is_editing else "")
+                text_surf = font_small.render(text_display, True, WHITE)
+                self.width = max(80, text_surf.get_width() + 20)
+                self.height = 35
+                self.text_surf = text_surf
         except:
             self.width = 80
             self.height = 35
@@ -136,42 +152,51 @@ class Block:
         dark_body = (max(0, r - 85), max(0, g - 85), max(0, b - 85))
         highlight = (min(255, r + 50), min(255, g + 50), min(255, b + 50))
 
-        if self.category == "Conditional" and self.is_template:
-            pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
-            pygame.draw.rect(surface, self.color, self.rect, 1, border_radius=4)
-            pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
-            if self.is_editing:
-                pygame.draw.rect(surface, ACCENT_COLOR, self.rect, 2, border_radius=4)
-            self._draw_text(surface, self.rect)
+        if self.category == "Conditional":
+            # kww must be scaled to screen coords since self.rect is the view rect during draw
+            kww = int(self.keyword_part_width * zoom_scale)
+            cond_dark = (max(0, r - 110), max(0, g - 110), max(0, b - 110))
+            kw_rect = pygame.Rect(self.rect.x, self.rect.y, kww, self.rect.height)
 
-        elif self.category == "Conditional" and not self.is_template:
-            if self.body_blocks:
+            if not self.is_template and self.body_blocks:
                 line_width = 3
                 header_height = self.rect.height
-                body_height = sum(b.rect.height + 2 for b in self.body_blocks) + 20
+                body_height = sum(bb.rect.height + 2 for bb in self.body_blocks) + 20
                 total_height = header_height + body_height
-
-                pygame.draw.rect(surface, dark_body, (self.rect.x, self.rect.y, self.rect.width, header_height), border_radius=4)
-                pygame.draw.rect(surface, self.color, (self.rect.x, self.rect.y, self.rect.width, header_height), 1, border_radius=4)
-                pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, header_height))
-                pygame.draw.line(surface, highlight, (self.rect.x + 4, self.rect.y + 1), (self.rect.right - 1, self.rect.y + 1), 1)
-
                 pygame.draw.line(surface, self.color,
-                               (self.rect.x, self.rect.y),
-                               (self.rect.x, self.rect.y + total_height),
-                               line_width)
+                                 (self.rect.x, self.rect.y),
+                                 (self.rect.x, self.rect.y + total_height),
+                                 line_width)
                 pygame.draw.line(surface, self.color,
-                               (self.rect.x, self.rect.y + total_height),
-                               (self.rect.x + self.rect.width, self.rect.y + total_height),
-                               line_width)
-            else:
-                pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
-                pygame.draw.rect(surface, self.color, self.rect, 1, border_radius=4)
-                pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
+                                 (self.rect.x, self.rect.y + total_height),
+                                 (self.rect.x + self.rect.width, self.rect.y + total_height),
+                                 line_width)
 
-            if self.is_editing:
-                pygame.draw.rect(surface, ACCENT_COLOR, self.rect, 2, border_radius=4)
-            self._draw_text(surface, self.rect)
+            # Keyword area
+            pygame.draw.rect(surface, dark_body, kw_rect, border_radius=4)
+            pygame.draw.rect(surface, self.color, kw_rect, 1, border_radius=4)
+            pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
+            pygame.draw.line(surface, highlight, (self.rect.x + 4, self.rect.y + 1), (self.rect.x + kww - 1, self.rect.y + 1), 1)
+            kw_surf = self.text_surf or font_small.render(self.text, True, WHITE)
+            surface.blit(kw_surf, kw_surf.get_rect(center=kw_rect.center))
+
+            # Condition drop-zone: open on the right so it looks expandable
+            if not self.is_template:
+                cond_x = self.rect.x + kww
+                cond_rect = pygame.Rect(cond_x, self.rect.y,
+                                        self.rect.width - kww, self.rect.height)
+                pygame.draw.rect(surface, cond_dark, cond_rect, border_radius=4)
+                bc = self.color if self.condition_blocks else (40, 65, 80)
+                # Left divider, top, bottom — right edge left open to show expandability
+                pygame.draw.line(surface, bc, (cond_rect.left, cond_rect.top),
+                                 (cond_rect.left, cond_rect.bottom - 1), 1)
+                pygame.draw.line(surface, bc, (cond_rect.left, cond_rect.top),
+                                 (cond_rect.right, cond_rect.top), 1)
+                pygame.draw.line(surface, bc, (cond_rect.left, cond_rect.bottom - 1),
+                                 (cond_rect.right, cond_rect.bottom - 1), 1)
+                if not self.condition_blocks:
+                    hint = font_small.render("add conditions", True, (50, 75, 100))
+                    surface.blit(hint, hint.get_rect(midleft=(cond_rect.left + 8, cond_rect.centery)))
 
         else:
             pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
@@ -198,6 +223,13 @@ class Block:
     def update_position(self, x, y):
         self.rect.x = x
         self.rect.y = y
+        # Position condition blocks horizontally inside the header
+        if self.condition_blocks:
+            cx = self.rect.x + self.keyword_part_width + 5
+            for cb in self.condition_blocks:
+                cb.rect.x = cx
+                cb.rect.y = self.rect.y
+                cx += cb.width + 2
         # Update nested blocks (body blocks) position - place them inside the C-shape
         if self.body_blocks:
             body_y = self.rect.y + self.rect.height + 5  # Start 5px below the header
@@ -365,9 +397,8 @@ def is_block_inside_conditional(block, conditional_block):
     total_height_with_buffer = total_height + buffer_height
 
     # Body area: inside the C-shape
-    # X: between left and right arms (with some margin for positioning)
+    # Body left wall only — the C-shape is open on the right so chains can extend freely
     body_left = conditional_block.rect.x + 10
-    body_right = conditional_block.rect.x + conditional_block.rect.width - 10
     # Y: below the header bar and above the bottom bar (with buffer)
     body_top = conditional_block.rect.y + conditional_block.rect.height + 5
     body_bottom = conditional_block.rect.y + total_height_with_buffer
@@ -376,60 +407,56 @@ def is_block_inside_conditional(block, conditional_block):
     block_center_x = block.rect.centerx
     block_center_y = block.rect.centery
 
-    return (body_left <= block_center_x <= body_right and
+    return (block_center_x >= body_left and
             body_top <= block_center_y <= body_bottom)
 
 
 def reorganize_nesting(placed_blocks):
     """Reorganize blocks into proper nesting hierarchy based on spatial position"""
-    # First, clear all parent-child relationships to reset
+    # Reset all parent_conditional references
     for block in placed_blocks:
-        if block not in placed_blocks or block.parent_conditional is not None:
-            if block.parent_conditional:
-                if block in block.parent_conditional.body_blocks:
-                    block.parent_conditional.body_blocks.remove(block)
-                block.parent_conditional = None
+        block.parent_conditional = None
 
-    # Now detect which blocks should be nested in which conditionals
+    # Clear body_blocks for all conditionals
     for conditional in placed_blocks:
         if conditional.category == "Conditional":
             conditional.body_blocks.clear()
 
+    # Spatially assign parent_conditional to every block inside a C-shape
     for block in placed_blocks:
         if block.category == "Conditional":
-            continue  # Skip conditional blocks, they can't be nested in themselves
-
-        # Find which conditional (if any) contains this block
+            continue
+        if block.in_condition_of is not None:
+            continue
         for conditional in placed_blocks:
             if conditional.category == "Conditional" and conditional != block:
                 if is_block_inside_conditional(block, conditional):
-                    # Check if already has a parent
-                    if block.parent_conditional:
-                        if block in block.parent_conditional.body_blocks:
-                            block.parent_conditional.body_blocks.remove(block)
-
                     block.parent_conditional = conditional
-                    if block not in conditional.body_blocks:
-                        conditional.body_blocks.append(block)
                     break
 
-    # After reorganizing, clear chain connections for nested blocks and reposition conditionals
+    # Sever only the connections that cross from outside into the body.
+    # Horizontal chains *within* the body are preserved.
     for block in placed_blocks:
+        if block.in_condition_of is not None:
+            continue
         if block.parent_conditional is not None:
-            # This block is nested - disconnect it from any chain (including parent conditional)
-            if block.prev_block is not None:
-                if block.prev_block != block.parent_conditional:
-                    # If prev_block is not the parent conditional, disconnect properly
-                    block.prev_block.next_block = None
-                else:
-                    # If prev_block IS the parent conditional, still disconnect
-                    block.prev_block.next_block = None
+            if (block.prev_block is not None and
+                    block.prev_block.parent_conditional != block.parent_conditional):
+                block.prev_block.next_block = None
                 block.prev_block = None
-            if block.next_block is not None:
-                block.next_block.prev_block = None
-                block.next_block = None
 
-    # Update positions of all conditionals to reposition body blocks
+    # body_blocks holds only chain heads — each row is one horizontal chain
+    for block in placed_blocks:
+        if block.in_condition_of is not None:
+            continue
+        if block.parent_conditional is not None:
+            cond = block.parent_conditional
+            # Chain head: no prev_block, or prev_block belongs to a different body
+            if block.prev_block is None or block.prev_block.parent_conditional != cond:
+                if block not in cond.body_blocks:
+                    cond.body_blocks.append(block)
+
+    # Reposition all conditionals (body rows + condition slot blocks)
     for conditional in placed_blocks:
         if conditional.category == "Conditional":
             conditional.update_position(conditional.rect.x, conditional.rect.y)
@@ -441,10 +468,17 @@ def extract_tokens_with_nesting(blocks):
 
     def traverse_block(block):
         """Recursive traversal of block hierarchy"""
-        if block.is_template or block in [b for cond in blocks if cond.category == "Conditional" for b in cond.body_blocks if cond.parent_conditional]:
+        if block.is_template or block.in_condition_of is not None:
+            return
+        if block in [b for cond in blocks if cond.category == "Conditional" for b in cond.body_blocks if cond.parent_conditional]:
             return
 
         tokens.append(block.text.strip())
+
+        # Emit condition block tokens immediately after the conditional keyword
+        if block.category == "Conditional" and block.condition_blocks:
+            for cb in block.condition_blocks:
+                tokens.append(cb.text.strip())
 
         # If this is a conditional, add its body tokens
         if block.category == "Conditional" and block.body_blocks:
@@ -459,7 +493,7 @@ def extract_tokens_with_nesting(blocks):
             traverse_block(block.next_block)
 
     # Find all chain starts (blocks with no parent conditional and no prev_block)
-    chain_starts = [b for b in blocks if b.prev_block is None and b.parent_conditional is None and not b.is_template]
+    chain_starts = [b for b in blocks if b.prev_block is None and b.parent_conditional is None and b.in_condition_of is None and not b.is_template]
     chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
 
     # Process each chain
@@ -1599,6 +1633,20 @@ while running:
                             offset_y = mouse_y - view_rect.y
                             break  # Just enter edit mode and mark for potential drag, don't disconnect yet
 
+                        # If this block is in a condition slot, pull it out and drag
+                        if b.in_condition_of is not None:
+                            parent = b.in_condition_of
+                            if b in parent.condition_blocks:
+                                parent.condition_blocks.remove(b)
+                            b.in_condition_of = None
+                            parent.update_size()
+                            parent.update_position(parent.rect.x, parent.rect.y)
+                            b.dragging = True
+                            dragging_block = b
+                            offset_x = mouse_x - view_rect.x
+                            offset_y = mouse_y - view_rect.y
+                            break
+
                         # Only disconnect and drag non-editable blocks
                         if b.prev_block:
                             b.prev_block.next_block = b.next_block
@@ -1640,88 +1688,111 @@ while running:
             if dragging_block:
                 dragging_block.dragging = False
                 dragging_block.update_size()
-                
-                for other in placed_blocks:
-                    if other != dragging_block and other.next_block is None:
-                        # Only allow connections if parent block is within bounds
-                        if other.rect.y >= workspace_top and other.rect.y < workspace_bottom:
-                            # Check for VERTICAL connection (block below another)
-                            if (abs(dragging_block.rect.top - other.rect.bottom) < 20 and
-                                abs(dragging_block.rect.centerx - other.rect.centerx) < 20):
-                                # Check if vertical connection would keep block in bounds
-                                new_y = other.rect.bottom + 2
-                                if new_y >= workspace_top and new_y + dragging_block.rect.height <= workspace_bottom:  # Stays within workspace
-                                    # Connect vertically - block goes below
-                                    other.next_block = dragging_block
-                                    other.connection_direction = "vertical"
-                                    dragging_block.prev_block = other
-                                    dragging_block.update_position(other.rect.x, new_y)
-                                    break
-                            # Check for HORIZONTAL connection (block to the right of another)
-                            elif (abs(dragging_block.rect.left - other.rect.right) < 20 and
-                                  abs(dragging_block.rect.centery - other.rect.centery) < 20):
-                                # Check if horizontal connection would keep block in bounds
-                                new_x = other.rect.right + 2
-                                new_y = other.rect.y
-                                if (new_x >= WORKSPACE_LEFT and new_x + dragging_block.rect.width <= WIDTH - WORKSPACE_RIGHT_MARGIN and
-                                    new_y >= workspace_top and new_y < workspace_bottom):  # Stays in bounds
-                                    # Connect horizontally - block goes to the right
-                                    other.next_block = dragging_block
-                                    other.connection_direction = "horizontal"
-                                    dragging_block.prev_block = other
-                                    dragging_block.update_position(new_x, new_y)
-                                    break
-                
-                if (dragging_block.rect.right < WORKSPACE_LEFT and dragging_block not in sidebar_blocks):
+
+                # --- Condition-slot snap detection ---
+                snapped_to_condition = False
+                if dragging_block.category != "Conditional":
+                    for cond in placed_blocks:
+                        if cond.category == "Conditional" and cond != dragging_block:
+                            cond_view = get_block_view_rect(cond)
+                            slot_x = cond_view.x + int(cond.keyword_part_width * zoom_scale)
+                            slot_rect = pygame.Rect(slot_x, cond_view.y,
+                                                    cond_view.right - slot_x, cond_view.height)
+                            drag_view = get_block_view_rect(dragging_block)
+                            if slot_rect.collidepoint(drag_view.centerx, drag_view.centery):
+                                # Detach from any chain
+                                if dragging_block.prev_block:
+                                    dragging_block.prev_block.next_block = dragging_block.next_block
+                                if dragging_block.next_block:
+                                    dragging_block.next_block.prev_block = dragging_block.prev_block
+                                dragging_block.prev_block = None
+                                dragging_block.next_block = None
+                                dragging_block.in_condition_of = cond
+                                if dragging_block not in cond.condition_blocks:
+                                    cond.condition_blocks.append(dragging_block)
+                                # Ensure condition block draws on top of its parent's background
+                                if dragging_block in placed_blocks:
+                                    placed_blocks.remove(dragging_block)
+                                    placed_blocks.append(dragging_block)
+                                cond.update_size()
+                                cond.update_position(cond.rect.x, cond.rect.y)
+                                snapped_to_condition = True
+                                break
+
+                if not snapped_to_condition:
+                    for other in placed_blocks:
+                        if other != dragging_block and other.next_block is None:
+                            # Only allow connections if parent block is within bounds
+                            if other.rect.y >= workspace_top and other.rect.y < workspace_bottom:
+                                # Check for VERTICAL connection (block below another)
+                                if (abs(dragging_block.rect.top - other.rect.bottom) < 20 and
+                                    abs(dragging_block.rect.centerx - other.rect.centerx) < 20):
+                                    # Check if vertical connection would keep block in bounds
+                                    new_y = other.rect.bottom + 2
+                                    if new_y >= workspace_top and new_y + dragging_block.rect.height <= workspace_bottom:
+                                        other.next_block = dragging_block
+                                        other.connection_direction = "vertical"
+                                        dragging_block.prev_block = other
+                                        dragging_block.update_position(other.rect.x, new_y)
+                                        break
+                                # Check for HORIZONTAL connection (block to the right of another)
+                                elif (abs(dragging_block.rect.left - other.rect.right) < 20 and
+                                      abs(dragging_block.rect.centery - other.rect.centery) < 20):
+                                    new_x = other.rect.right + 2
+                                    new_y = other.rect.y
+                                    if (new_x >= WORKSPACE_LEFT and new_x + dragging_block.rect.width <= WIDTH - WORKSPACE_RIGHT_MARGIN and
+                                        new_y >= workspace_top and new_y < workspace_bottom):
+                                        # If dropping to the right of a Conditional or a condition block,
+                                        # extend the condition slot instead of making a chain link
+                                        if other.category == "Conditional":
+                                            cond_parent = other
+                                        elif other.in_condition_of is not None:
+                                            cond_parent = other.in_condition_of
+                                        else:
+                                            cond_parent = None
+                                        if cond_parent is not None:
+                                            dragging_block.in_condition_of = cond_parent
+                                            if dragging_block not in cond_parent.condition_blocks:
+                                                cond_parent.condition_blocks.append(dragging_block)
+                                            if dragging_block in placed_blocks:
+                                                placed_blocks.remove(dragging_block)
+                                                placed_blocks.append(dragging_block)
+                                            cond_parent.update_size()
+                                            cond_parent.update_position(cond_parent.rect.x, cond_parent.rect.y)
+                                        else:
+                                            other.next_block = dragging_block
+                                            other.connection_direction = "horizontal"
+                                            dragging_block.prev_block = other
+                                            dragging_block.update_position(new_x, new_y)
+                                        break
+
+                def _remove_dragging_block():
+                    if dragging_block.category == "Conditional":
+                        for cb in dragging_block.condition_blocks:
+                            cb.in_condition_of = None
+                            if cb in placed_blocks:
+                                placed_blocks.remove(cb)
+                        dragging_block.condition_blocks.clear()
+                    if dragging_block.prev_block:
+                        dragging_block.prev_block.next_block = dragging_block.next_block
+                    if dragging_block.next_block:
+                        dragging_block.next_block.prev_block = dragging_block.prev_block
+                    dragging_block.prev_block = None
+                    dragging_block.next_block = None
                     if dragging_block in placed_blocks:
                         placed_blocks.remove(dragging_block)
 
-                # Remove blocks that go above workspace area
+                if dragging_block.rect.right < WORKSPACE_LEFT and dragging_block not in sidebar_blocks:
+                    _remove_dragging_block()
+
                 if dragging_block in placed_blocks and dragging_block.rect.bottom < workspace_top:
-                    # Disconnect this block and any blocks connected to it
-                    if dragging_block.prev_block:
-                        dragging_block.prev_block.next_block = None
-                    if dragging_block.next_block:
-                        # Chain removal for all connected blocks
-                        curr = dragging_block.next_block
-                        if dragging_block.prev_block:
-                            dragging_block.prev_block.next_block = curr
-                        if curr:
-                            curr.prev_block = dragging_block.prev_block
-                    dragging_block.prev_block = None
-                    dragging_block.next_block = None
-                    placed_blocks.remove(dragging_block)
+                    _remove_dragging_block()
 
-                # Remove blocks that go to the right outside bounds
                 if dragging_block in placed_blocks and dragging_block.rect.x > WIDTH - WORKSPACE_RIGHT_MARGIN:
-                    # Disconnect this block and any blocks connected to it
-                    if dragging_block.prev_block:
-                        dragging_block.prev_block.next_block = None
-                    if dragging_block.next_block:
-                        curr = dragging_block.next_block
-                        if dragging_block.prev_block:
-                            dragging_block.prev_block.next_block = curr
-                        if curr:
-                            curr.prev_block = dragging_block.prev_block
-                    dragging_block.prev_block = None
-                    dragging_block.next_block = None
-                    placed_blocks.remove(dragging_block)
+                    _remove_dragging_block()
 
-                # Remove blocks that go below console area
                 if dragging_block in placed_blocks and dragging_block.rect.y > workspace_bottom:
-                    # Disconnect this block and any blocks connected to it
-                    if dragging_block.prev_block:
-                        dragging_block.prev_block.next_block = None
-                    if dragging_block.next_block:
-                        # Chain removal for all connected blocks below
-                        curr = dragging_block.next_block
-                        if dragging_block.prev_block:
-                            dragging_block.prev_block.next_block = curr
-                        if curr:
-                            curr.prev_block = dragging_block.prev_block
-                    dragging_block.prev_block = None
-                    dragging_block.next_block = None
-                    placed_blocks.remove(dragging_block)
+                    _remove_dragging_block()
 
                 # Reorganize nesting based on spatial position after all blocks are placed
                 reorganize_nesting(placed_blocks)
