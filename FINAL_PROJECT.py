@@ -1,1639 +1,220 @@
 import pygame
 import sys
 
-# Initialize Pygame
+import shared
+from constants import *
+from block import Block
+from compiler import evaluate_compiler_logic, reorganize_nesting
+from ui_helpers import (
+    show_explainability_window, recalculate_ui_positions,
+    get_block_view_rect, clamp_all_blocks_to_workspace,
+    is_mouse_on_separator,
+)
+
+# ---- Initialize ----
 pygame.init()
 
-# ---- UI/UX Design ----
-# Background Colors
-BG_COLOR = (10, 12, 20)
-WORKSPACE_COLOR = (14, 17, 30)
-CONSOLE_COLOR = (8, 10, 16)
-WHITE = (220, 225, 240)
-BLACK = (0, 0, 0)
-GREEN_TEXT = (0, 240, 120)
-RED_TEXT = (255, 55, 75)
-BLUE_TEXT = (0, 180, 255)
+shared.font_small  = pygame.font.SysFont('Consolas', 14, bold=True)
+shared.font_header = pygame.font.SysFont('Consolas', 18, bold=True)
+shared.font_console= pygame.font.SysFont('Consolas', 13)
+shared.font_label  = pygame.font.SysFont('Consolas', 10, bold=True)
 
-# Additional UI Colors
-SIDEBAR_BG = (11, 13, 22)
-HEADER_BG = (8, 10, 18)
-ACCENT_COLOR = (0, 190, 255)
-GRID_DOT_COLOR = (22, 28, 48)
-
-# Block Colors
-ORANGE_BLOCK = (255, 90, 25)
-BLUE_BLOCK = (0, 140, 255)
-GRAY_BLOCK = (65, 80, 100)
-PURPLE_BLOCK = (155, 35, 235)
-CYAN_BLOCK = (0, 205, 225)
-CLEAR_BTN_COLOR = (210, 35, 60)
-RUN_BTN_COLOR = (0, 190, 85)
-
-# Screen Setup
-ORIGINAL_WIDTH, ORIGINAL_HEIGHT = 900, 650
-MINIMUM_WIDTH, MINIMUM_HEIGHT = 600, 400
-WIDTH, HEIGHT = ORIGINAL_WIDTH, ORIGINAL_HEIGHT
-
-# Sidebar and workspace constants
-SIDEBAR_WIDTH = 170
-WORKSPACE_LEFT = 200
-WORKSPACE_BOTTOM = 460
-CONSOLE_HEIGHT = 160
-BUTTON_HEIGHT = 35
-
-# Zoom and layout variables
-zoom_scale = 1.0
-ZOOM_MIN = 0.5
-ZOOM_MAX = 2.0
-ZOOM_STEP = 0.1
-
-# Dynamic layout boundaries (calculated in recalculate_ui_positions)
-HEADER_HEIGHT = 50
-CONSOLE_HEIGHT_FIXED = 120
-WORKSPACE_RIGHT_MARGIN = 20
-
-# Separator configuration for draggable console
-SEPARATOR_HEIGHT = 10  # Draggable zone height (±5px from separator line)
-MIN_CONSOLE_HEIGHT = 60  # Minimum console height when draggedl
-MAX_CONSOLE_HEIGHT = int(ORIGINAL_HEIGHT * 0.75)  # Max before workspace becomes too small
-
-workspace_top = HEADER_HEIGHT
-workspace_bottom = HEIGHT - CONSOLE_HEIGHT_FIXED
-console_top = HEIGHT - CONSOLE_HEIGHT_FIXED
-console_bottom = HEIGHT
-
-screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+screen = pygame.display.set_mode((shared.WIDTH, shared.HEIGHT), pygame.RESIZABLE)
 pygame.display.set_caption("ProgBlocks: Block and Compile!")
 
-# Fonts
-font_small = pygame.font.SysFont('Consolas', 14, bold=True)
-font_header = pygame.font.SysFont('Consolas', 18, bold=True)
-font_console = pygame.font.SysFont('Consolas', 13)
-font_label = pygame.font.SysFont('Consolas', 10, bold=True)
-
-# Keywords, Operators, Separators
-KEYWORDS = {'digit', 'word', 'bet', 'out', 'adds', 'minus', 'mul', 'div', 'end', 'if', 'while', 'for', 'if_end', 'while_end', 'for_end'}
-OPERATORS = {':', ':=', 'adds', 'minus', 'mul', 'div'}
-SEPARATORS = {'end'}
-
-# The Blocks of ProgBlocks
-AVAILABLE_BLOCKS = [
-    ("digit", ORANGE_BLOCK, "Keyword"),
-    ("word", ORANGE_BLOCK, "Keyword"),
-    ("bet", ORANGE_BLOCK, "Keyword"),
-    (":", BLUE_BLOCK, "Operator"),
-    (":=", BLUE_BLOCK, "Operator"),
-    ("adds", BLUE_BLOCK, "Operator"),
-    ("minus", BLUE_BLOCK, "Operator"),
-    ("mul", BLUE_BLOCK, "Operator"),
-    ("div", BLUE_BLOCK, "Operator"),
-    ("end", GRAY_BLOCK, "Separator"),
-    ("out", GRAY_BLOCK, "Keyword"),
-    ("data", PURPLE_BLOCK, "Editable"),
-    ("if", CYAN_BLOCK, "Conditional"),
-    ("while", CYAN_BLOCK, "Conditional"),
-    ("for", CYAN_BLOCK, "Conditional"),
+sidebar_blocks = [
+    Block(t, c, cat, 15 + (i % 2) * 85, HEADER_HEIGHT + 10 + (i // 2) * 45, True)
+    for i, (t, c, cat) in enumerate(AVAILABLE_BLOCKS)
 ]
 
-class Block:
-    def __init__(self, text, color, category, x, y, is_template=False):
-        self.text = text
-        self.color = color
-        self.category = category
-        self.is_template = is_template
-        self.is_editing = False
-        self.keyword_part_width = 55
-        self.condition_blocks = []   # blocks dropped into the condition slot
-        self.in_condition_of = None  # parent Conditional if this block is in a condition slot
-        self.next_block = None
-        self.prev_block = None
-        self.connection_direction = "vertical"
-        self.text_surf = None
-        self.rect = None
-        # Nesting properties for conditional blocks
-        self.body_blocks = []  # Blocks nested inside this conditional
-        self.parent_conditional = None  # Reference to parent conditional if nested
-        self.c_depth = 0  # Nesting depth for visual indentation
-        self.update_size()
-        self.rect = pygame.Rect(x, y, self.width, self.height)
-        self.dragging = False
+console_output   = ["Blueprint ready!", "Drag blocks from the left to start building your program."]
+detailed_phases  = {}
+dragging_separator    = False
+separator_mouse_offset= 0
 
-    def update_size(self):
-        try:
-            if self.category == "Conditional":
-                kw_surf = font_small.render(self.text, True, WHITE)
-                self.keyword_part_width = max(55, kw_surf.get_width() + 20)
-                if self.is_template:
-                    self.width = self.keyword_part_width
-                elif self.condition_blocks:
-                    cond_w = sum(cb.width + 2 for cb in self.condition_blocks) + 10
-                    self.width = self.keyword_part_width + max(10, cond_w)
-                else:
-                    self.width = self.keyword_part_width + 120
-                self.height = 35
-                self.text_surf = kw_surf
-            else:
-                text_display = self.text + ("|" if self.is_editing else "")
-                text_surf = font_small.render(text_display, True, WHITE)
-                self.width = max(80, text_surf.get_width() + 20)
-                self.height = 35
-                self.text_surf = text_surf
-        except:
-            self.width = 80
-            self.height = 35
-            self.text_surf = None
-        if self.rect:
-            self.rect.width = self.width
-            self.rect.height = self.height
-
-    def draw(self, surface):
-        r, g, b = self.color
-        dark_body = (max(0, r - 85), max(0, g - 85), max(0, b - 85))
-        highlight = (min(255, r + 50), min(255, g + 50), min(255, b + 50))
-
-        if self.category == "Conditional":
-            # kww must be scaled to screen coords since self.rect is the view rect during draw
-            kww = int(self.keyword_part_width * zoom_scale)
-            cond_dark = (max(0, r - 110), max(0, g - 110), max(0, b - 110))
-            kw_rect = pygame.Rect(self.rect.x, self.rect.y, kww, self.rect.height)
-
-            if not self.is_template and self.body_blocks:
-                line_width = 3
-                header_height = self.rect.height
-                body_height = sum(bb.rect.height + 2 for bb in self.body_blocks) + 20
-                total_height = header_height + body_height
-                pygame.draw.line(surface, self.color,
-                                 (self.rect.x, self.rect.y),
-                                 (self.rect.x, self.rect.y + total_height),
-                                 line_width)
-                pygame.draw.line(surface, self.color,
-                                 (self.rect.x, self.rect.y + total_height),
-                                 (self.rect.x + self.rect.width, self.rect.y + total_height),
-                                 line_width)
-
-            # Keyword area
-            pygame.draw.rect(surface, dark_body, kw_rect, border_radius=4)
-            pygame.draw.rect(surface, self.color, kw_rect, 1, border_radius=4)
-            pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
-            pygame.draw.line(surface, highlight, (self.rect.x + 4, self.rect.y + 1), (self.rect.x + kww - 1, self.rect.y + 1), 1)
-            kw_surf = self.text_surf or font_small.render(self.text, True, WHITE)
-            surface.blit(kw_surf, kw_surf.get_rect(center=kw_rect.center))
-
-            # Condition drop-zone: open on the right so it looks expandable
-            if not self.is_template:
-                cond_x = self.rect.x + kww
-                cond_rect = pygame.Rect(cond_x, self.rect.y,
-                                        self.rect.width - kww, self.rect.height)
-                pygame.draw.rect(surface, cond_dark, cond_rect, border_radius=4)
-                bc = self.color if self.condition_blocks else (40, 65, 80)
-                # Left divider, top, bottom — right edge left open to show expandability
-                pygame.draw.line(surface, bc, (cond_rect.left, cond_rect.top),
-                                 (cond_rect.left, cond_rect.bottom - 1), 1)
-                pygame.draw.line(surface, bc, (cond_rect.left, cond_rect.top),
-                                 (cond_rect.right, cond_rect.top), 1)
-                pygame.draw.line(surface, bc, (cond_rect.left, cond_rect.bottom - 1),
-                                 (cond_rect.right, cond_rect.bottom - 1), 1)
-                if not self.condition_blocks:
-                    hint = font_small.render("add conditions", True, (50, 75, 100))
-                    surface.blit(hint, hint.get_rect(midleft=(cond_rect.left + 8, cond_rect.centery)))
-
-        else:
-            pygame.draw.rect(surface, dark_body, self.rect, border_radius=4)
-            pygame.draw.rect(surface, self.color, self.rect, 1, border_radius=4)
-            pygame.draw.rect(surface, self.color, pygame.Rect(self.rect.x, self.rect.y, 3, self.rect.height))
-            pygame.draw.line(surface, highlight, (self.rect.x + 4, self.rect.y + 1), (self.rect.right - 1, self.rect.y + 1), 1)
-            if self.is_editing:
-                pygame.draw.rect(surface, ACCENT_COLOR, self.rect, 2, border_radius=4)
-            self._draw_text(surface, self.rect)
-
-    def _draw_text(self, surface, rect):
-        try:
-            if self.text_surf:
-                text_rect = self.text_surf.get_rect(center=rect.center)
-                surface.blit(self.text_surf, text_rect)
-            else:
-                text_display = self.text + ("|" if self.is_editing else "")
-                text_surf = font_small.render(text_display, True, WHITE)
-                text_rect = text_surf.get_rect(center=rect.center)
-                surface.blit(text_surf, text_rect)
-        except:
-            pass
-
-    def update_position(self, x, y):
-        self.rect.x = x
-        self.rect.y = y
-        # Position condition blocks horizontally inside the header
-        if self.condition_blocks:
-            cx = self.rect.x + self.keyword_part_width + 5
-            for cb in self.condition_blocks:
-                cb.rect.x = cx
-                cb.rect.y = self.rect.y
-                cx += cb.width + 2
-        # Update nested blocks (body blocks) position - place them inside the C-shape
-        if self.body_blocks:
-            body_y = self.rect.y + self.rect.height + 5  # Start 5px below the header
-            body_x = self.rect.x + 20  # Indented from left arm
-            for body_block in self.body_blocks:
-                body_block.update_position(body_x, body_y)
-                body_y = body_block.rect.bottom + 2
-        # Update next block in chain
-        if self.next_block:
-            if self.connection_direction == "horizontal":
-                # Sticking the block to the right
-                self.next_block.update_position(self.rect.right + 2, self.rect.y)
-            else:
-                # Sticking the block below - account for C-shape height
-                if self.category == "Conditional" and self.body_blocks:
-                    body_height = sum(b.rect.height + 2 for b in self.body_blocks) + 20
-                    next_y = self.rect.y + self.rect.height + body_height + 2
-                else:
-                    next_y = self.rect.y + self.rect.height + 40 + 2
-                self.next_block.update_position(self.rect.x, next_y)
-
-# ---- THE COMPILER ----
-"""This function checks if the token is valid"""
-def is_valid_token(token):
-    # Valid Keywords, Operators, Separators
-    if token in KEYWORDS or token in OPERATORS or token in SEPARATORS:
-        return True
-    
-    # Valid Literals
-    lit_type = get_literal_type(token)
-    if lit_type:
-        return True
-    
-    # Valid Identifiers 
-    if is_valid_identifier(token):
-        return True
-    
-    return False
-
-"""This function checks if a name is a valid identifier which starts with a letter 
-    or underscore followed by alphanumeric characters, It invalid if it is a keyword, 
-    starts with a digit, or contains special characters.""" 
-def is_valid_identifier(name):
-    try:
-        if not name or len(name) == 0:
-            return False
-        if not (name[0].isalpha() or name[0] == '_'):
-            return False
-        if name in KEYWORDS:
-            return False
-        return all(c.isalnum() or c == '_' for c in name)
-    except:
-        return False
-
-"""This function get and determines the literal type, if it is a digit, word, or bet"""
-def get_literal_type(literal):
-    try:
-        stripped = literal.strip('"\'')
-
-        # Check for bet values either 'real' or 'fake' 
-        if stripped.lower() in ['real', 'fake']:
-            return 'bet'
-
-        # Check for digit
-        if stripped.isdigit():
-            return 'digit'
-
-        # Check for word (string) literals - must have both opening and closing quotes
-        if literal.startswith('"') and literal.endswith('"') and len(literal) >= 2:
-            return 'word'
-        if literal.startswith("'") and literal.endswith("'") and len(literal) >= 2:
-            return 'word'
-    except:
-        pass
-    return None
-
-"""This function performs lexical analysis of the compiler input"""
-def lexical_analysis(tokens):
-    errors = []
-    for i, token in enumerate(tokens):
-        if not is_valid_token(token):
-            if get_literal_type(token) is None and not is_valid_identifier(token):
-                errors.append(f"Lexical Error [{i+1}]: Variable '{token}' not found")
-            else:
-                errors.append(f"Lexical Error [{i+1}]: Invalid token '{token}'")
-    return errors
-
-# Recovery strategies for different error types
-def get_recovery_strategies(error_type, error_details):
-    """Return recovery strategies for different error types"""
-    strategies = {
-        "lexical_invalid_token": [
-            "RECOVERY STRATEGIES:",
-            "1. Check token spelling and capitalization",
-            "2. Use valid keywords: digit, word, bet, out, end, :, adds, minus, mul, div",
-            "3. Variable names must start with letter or underscore",
-            "4. Numbers must be wrapped in quotes for string/word types",
-            "5. Strings must use double quotes: \"hello\"",
-            "6. Booleans must be: true or false"
-        ],
-        "syntax_missing_end": [
-            "RECOVERY STRATEGIES:",
-            "1. Every program must end with 'end' block",
-            "2. Block structure: TYPE NAME : VALUE end",
-            "3. Output structure: out VALUE end",
-            "4. Add missing 'end' terminator at the conclusion",
-            "5. Chain blocks together: drag and connect visually"
-        ],
-        "syntax_invalid_start": [
-            "RECOVERY STRATEGIES:",
-            "1. Programs must start with: digit, word, bet, or out",
-            "2. digit = numeric variable declaration",
-            "3. word = string variable declaration",
-            "4. bet = boolean variable declaration",
-            "5. out = output/print statement",
-            "6. Start with a declaration or output block"
-        ],
-        "semantic_type_mismatch": [
-            "RECOVERY STRATEGIES:",
-            "1. Match value type to declared type",
-            "2. digit expects numbers: 42, 3, 100",
-            "3. word expects quoted strings: \"hello\", \"world\"",
-            "4. bet expects boolean: true or false",
-            "5. Check quotes around string values",
-            "6. Numbers don't need quotes for digit type"
-        ],
-        "semantic_undefined_identifier": [
-            "RECOVERY STRATEGIES:",
-            "1. Declare variable before using in output",
-            "2. Variable names are case-sensitive",
-            "3. Check spelling of variable names",
-            "4. Declare with: digit, word, or bet first",
-            "5. Use full declaration: TYPE NAME : VALUE end",
-            "6. Then output with: out VARNAME end"
-        ],
-        "semantic_invalid_declaration": [
-            "RECOVERY STRATEGIES:",
-            "1. Declaration format: TYPE NAME : VALUE end",
-            "2. Replace TYPE with: digit, word, or bet",
-            "3. NAME must be valid identifier",
-            "4. VALUE must match the TYPE",
-            "5. : and end are required separators",
-            "6. Example: digit count : 5 end"
-        ]
-    }
-    return strategies.get(error_type, ["No recovery strategies available for this error"])
-
-
-"""Helper functions for conditional nesting"""
-def is_block_inside_conditional(block, conditional_block):
-    """Check if block is spatially inside a conditional block's body area (inside the C-shape)"""
-    if conditional_block.category != "Conditional":
-        return False
-
-    # Calculate the height of the C-shape based on nested blocks
-    if conditional_block.body_blocks:
-        body_height = sum(b.rect.height + 2 for b in conditional_block.body_blocks) + 20
-        total_height = conditional_block.rect.height + body_height
-    else:
-        total_height = conditional_block.rect.height + 40
-
-    # Add buffer space to account for blocks being added/repositioned
-    # This allows multiple blocks to be properly detected as inside the conditional
-    buffer_height = 100
-    total_height_with_buffer = total_height + buffer_height
-
-    # Body area: inside the C-shape
-    # Body left wall only — the C-shape is open on the right so chains can extend freely
-    body_left = conditional_block.rect.x + 10
-    # Y: below the header bar and above the bottom bar (with buffer)
-    body_top = conditional_block.rect.y + conditional_block.rect.height + 5
-    body_bottom = conditional_block.rect.y + total_height_with_buffer
-
-    # Check if block's center is within body area
-    block_center_x = block.rect.centerx
-    block_center_y = block.rect.centery
-
-    return (block_center_x >= body_left and
-            body_top <= block_center_y <= body_bottom)
-
-
-def reorganize_nesting(placed_blocks):
-    """Reorganize blocks into proper nesting hierarchy based on spatial position"""
-    # Reset all parent_conditional references
-    for block in placed_blocks:
-        block.parent_conditional = None
-
-    # Clear body_blocks for all conditionals
-    for conditional in placed_blocks:
-        if conditional.category == "Conditional":
-            conditional.body_blocks.clear()
-
-    # Spatially assign parent_conditional to every block inside a C-shape
-    for block in placed_blocks:
-        if block.category == "Conditional":
-            continue
-        if block.in_condition_of is not None:
-            continue
-        for conditional in placed_blocks:
-            if conditional.category == "Conditional" and conditional != block:
-                if is_block_inside_conditional(block, conditional):
-                    block.parent_conditional = conditional
-                    break
-
-    # Sever only the connections that cross from outside into the body.
-    # Horizontal chains *within* the body are preserved.
-    for block in placed_blocks:
-        if block.in_condition_of is not None:
-            continue
-        if block.parent_conditional is not None:
-            if (block.prev_block is not None and
-                    block.prev_block.parent_conditional != block.parent_conditional):
-                block.prev_block.next_block = None
-                block.prev_block = None
-
-    # body_blocks holds only chain heads — each row is one horizontal chain
-    for block in placed_blocks:
-        if block.in_condition_of is not None:
-            continue
-        if block.parent_conditional is not None:
-            cond = block.parent_conditional
-            # Chain head: no prev_block, or prev_block belongs to a different body
-            if block.prev_block is None or block.prev_block.parent_conditional != cond:
-                if block not in cond.body_blocks:
-                    cond.body_blocks.append(block)
-
-    # Reposition all conditionals (body rows + condition slot blocks)
-    for conditional in placed_blocks:
-        if conditional.category == "Conditional":
-            conditional.update_position(conditional.rect.x, conditional.rect.y)
-
-
-def extract_tokens_with_nesting(blocks):
-    """Extract tokens from blocks while preserving conditional nesting hierarchy"""
-    tokens = []
-
-    def traverse_block(block):
-        """Recursive traversal of block hierarchy"""
-        if block.is_template or block.in_condition_of is not None:
-            return
-        if block in [b for cond in blocks if cond.category == "Conditional" for b in cond.body_blocks if cond.parent_conditional]:
-            return
-
-        tokens.append(block.text.strip())
-
-        # Emit condition block tokens immediately after the conditional keyword
-        if block.category == "Conditional" and block.condition_blocks:
-            for cb in block.condition_blocks:
-                tokens.append(cb.text.strip())
-
-        # If this is a conditional, add its body tokens
-        if block.category == "Conditional" and block.body_blocks:
-            for body_block in block.body_blocks:
-                traverse_block(body_block)
-            # Add the corresponding end token
-            end_keyword = block.text + "_end"
-            tokens.append(end_keyword)
-
-        # Then process next block in chain
-        if block.next_block:
-            traverse_block(block.next_block)
-
-    # Find all chain starts (blocks with no parent conditional and no prev_block)
-    chain_starts = [b for b in blocks if b.prev_block is None and b.parent_conditional is None and b.in_condition_of is None and not b.is_template]
-    chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
-
-    # Process each chain
-    for start_block in chain_starts:
-        traverse_block(start_block)
-
-    return tokens
-
-
-
-def evaluate_compiler_logic(blocks):
-    # No blocks in the blueprint area
-    if not blocks:
-        return ["Error: No blocks in workspace.", "Status: COMPILATION FAILED"], {}
-
-    # Remove blocks that are outside the blueprint area
-    valid_blocks = [b for b in blocks if b.rect.x >= WORKSPACE_LEFT and b.rect.x + b.rect.width <= WIDTH - WORKSPACE_RIGHT_MARGIN and b.rect.y >= workspace_top and b.rect.y + b.rect.height <= workspace_bottom]
-
-    if not valid_blocks:
-        return ["Error: No blocks in valid blueprint area.", "Status: COMPILATION FAILED"], {}
-
-    # Reorganize nesting first
-    reorganize_nesting(valid_blocks)
-
-    # Initial block detection - only get blocks with no parent conditional and no prev block
-    chain_starts = [b for b in valid_blocks if b.prev_block is None and b.parent_conditional is None]
-
-    if not chain_starts:
-        return ["Error: No valid blocks found.", "Status: COMPILATION FAILED"], {}
-
-    # The precedence of blocks (Top to Bottom, Left to Right)
-    chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
-
-    # Reading the chains of blocks
-    all_chains = []
-    for start_block in chain_starts:
-        chain = []
-        curr = start_block
-        while curr:
-            chain.append(curr)
-            curr = curr.next_block
-        all_chains.append(chain)
-
-    # Tokenization of all blocks within the chains
-    all_blocks = []
-    for chain in all_chains:
-        all_blocks.extend(chain)
-
-    # Tokenization of Block Texts using hierarchical extraction
-    tokens = extract_tokens_with_nesting(valid_blocks)
-
-    if not tokens:
-        return ["Error: No valid tokens.", "Status: COMPILATION FAILED"], {}
-
-    results = []
-    compiled_lines = []
-    output_results = []  
-    detailed_phases = {"lexical": [], "syntax": [], "semantic": [], "recovery": [], "symbol_table": [], "phase_status": {}}
-
-    # Lexical Analysis
-    lexical_errors = lexical_analysis(tokens)
-    if lexical_errors:
-        results.extend(lexical_errors)
-        results.append("Status: LEXICAL ANALYSIS FAILED")
-        detailed_phases["lexical"] = ["PHASE: LEXICAL ANALYSIS"] + lexical_errors
-        detailed_phases["lexical"].append("Result: [FAILED]")
-        detailed_phases["recovery"] = get_recovery_strategies("lexical_invalid_token", "")
-        return results, detailed_phases
-
-    # Keyword Classification and Token Details
-    detailed_phases["lexical"].append("PHASE: LEXICAL ANALYSIS")
-    detailed_phases["lexical"].append(f"Tokens: {' '.join(tokens)}")
-    for i, token in enumerate(tokens):
-        if token in KEYWORDS:
-            detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Keyword")
-        elif token in OPERATORS:
-            detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Operator")
-        elif token in SEPARATORS:
-            detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Separator")
-        else:
-            lit_type = get_literal_type(token)
-            if lit_type:
-                detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Literal ({lit_type})")
-            else:
-                detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Identifier")
-    detailed_phases["lexical"].append("Result: [PASSED]")
-
-    results.append("Checking Lexical... OK")
-
-    # Syntax Analysis
-    detailed_phases["syntax"].append("PHASE: SYNTAX ANALYSIS")
-    if tokens[-1] != "end":
-        results.append("Syntax Error: Missing 'end' terminator")
-        results.append("Status: SYNTAX ANALYSIS FAILED")
-        detailed_phases["syntax"].append("ERROR: Missing 'end' terminator")
-        detailed_phases["syntax"].append("Result: [FAILED]")
-        detailed_phases["recovery"] = get_recovery_strategies("syntax_missing_end", "")
-        return results, detailed_phases
-    elif tokens[0] not in ['digit', 'word', 'bet', 'out']:
-        results.append(f"Syntax Error: Invalid start token '{tokens[0]}'")
-        results.append("Status: SYNTAX ANALYSIS FAILED")
-        detailed_phases["syntax"].append(f"ERROR: Invalid start token '{tokens[0]}'")
-        detailed_phases["syntax"].append("Result: [FAILED]")
-        detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", tokens[0])
-        return results, detailed_phases
-
-    # Keywords as identifiers checker
-    for i, token in enumerate(tokens):
-        if token in KEYWORDS and i > 0 and tokens[i-1] in ['digit', 'word', 'bet']:
-            results.append(f"Syntax Error [{i+1}]: Cannot use keyword '{token}' as identifier")
-            results.append("Status: SYNTAX ANALYSIS FAILED")
-            detailed_phases["syntax"].append(f"ERROR: Keyword '{token}' cannot be used as identifier at position {i+1}")
-            detailed_phases["syntax"].append("Result: [FAILED]")
-            detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", "")
-            return results, detailed_phases
-
-    # Statement validation
-    detailed_phases["syntax"].append(f"Program structure validation:")
-    detailed_phases["syntax"].append(f"  Total tokens: {len(tokens)}")
-
-    # Parse statements by 'end' delimiter
-    statement_start = 0
-    statement_num = 1
-    syntax_error = False
-    for i, token in enumerate(tokens):
-        if token == 'end':
-            # Extract statement
-            statement_tokens = tokens[statement_start:i+1]
-            if statement_tokens:
-                first = statement_tokens[0]
-                last = statement_tokens[-1]
-                token_count = len(statement_tokens)
-                statement_str = ' '.join(statement_tokens)
-
-                # Validate statement structure
-                if first in ['digit', 'word', 'bet', 'out'] and last == 'end':
-                    detailed_phases["syntax"].append(f"  Statement {statement_num}: {statement_str} - [VALID]")
-                else:
-                    # Invalid statement - report error and stop
-                    results.append(f"Syntax Error: Invalid statement structure at Statement {statement_num}")
-                    results.append(f"Statement {statement_num}: {statement_str}")
-                    results.append(f"Expected: [KEYWORD/OUT] [ARGS...] end")
-                    results.append("Status: SYNTAX ANALYSIS FAILED")
-                    detailed_phases["syntax"].append(f"ERROR: Invalid statement structure at Statement {statement_num}")
-                    detailed_phases["syntax"].append(f"  Statement {statement_num}: {statement_str}")
-                    detailed_phases["syntax"].append(f"  First token: '{first}' - expected keyword (digit/word/bet/out)")
-                    detailed_phases["syntax"].append(f"  Last token: '{last}' - expected 'end'")
-                    detailed_phases["syntax"].append("Result: [FAILED]")
-                    detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", "")
-                    return results, detailed_phases
-
-                statement_num += 1
-            statement_start = i + 1
-
-    detailed_phases["syntax"].append("Result: [PASSED]")
-
-    results.append("Checking Syntax... OK")
-
-    # Semantic Analysis
-    variables = {}
-    variable_types = {}  # Check for datatypes
-    memory_offset = 0  # Counter for memory offsets for symbol table
-    offset_sizes = {'digit': 4, 'word': 1, 'bet': 2}  # Width of each datatype
-    error_occurred = False
-    detailed_phases["semantic"].append("PHASE: SEMANTIC ANALYSIS")
-
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-
-        # If invalid token
-        if token in ['digit', 'word', 'bet']:
-            # Comparison for the bet datatype: 
-            if token == 'bet' and i + 5 < len(tokens) and tokens[i+2] == ':=' and tokens[i+5] == 'end':
-                # Comparison pattern: bet NAME := VALUE1 VALUE2 end
-                var_name = tokens[i+1]
-                value1 = tokens[i+3]
-                value2 = tokens[i+4]
-                expected_type = 'bet'
-
-                # Validate variable name
-                if var_name in KEYWORDS or var_name in OPERATORS or var_name in SEPARATORS:
-                    error_detail = "keyword" if var_name in KEYWORDS else "reserved symbol"
-                    results.append(f"Semantic Error [{i+2}]: '{var_name}' is a {error_detail}, cannot use as variable name")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: {error_detail.capitalize()} '{var_name}' cannot be used as variable name")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", f"use a different name, not '{var_name}'")
-                    break
-
-                if '"' in var_name or "'" in var_name or not is_valid_identifier(var_name):
-                    results.append(f"Semantic Error [{i+2}]: Invalid variable name '{var_name}'")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid variable name at token {i+2}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "use valid identifier")
-                    break
-
-                # Check for duplicate variable names
-                if var_name in variables:
-                    results.append(f"Semantic Error [{i+2}]: Variable '{var_name}' already declared")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Duplicate variable name '{var_name}' at token {i+2}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", f"use a different variable name, '{var_name}' is already declared")
-                    break
-
-                # Get actual values for comparison
-                val1 = None
-                val2 = None
-
-                # Resolve value1
-                if value1 in variables:
-                    val1 = variables[value1]
-                else:
-                    lit_type = get_literal_type(value1)
-                    if lit_type == 'digit':
-                        try:
-                            val1 = int(value1.strip('"\''))
-                        except:
-                            val1 = float(value1.strip('"\''))
-                    elif lit_type == 'word':
-                        val1 = value1.strip('"\'')
-                    elif lit_type == 'bet':
-                        val1 = value1.strip('"\'').lower() == 'real'
-                    else:
-                        if is_valid_identifier(value1):
-                            results.append(f"Semantic Error [{i+3}]: Variable '{value1}' not found")
-                        else:
-                            results.append(f"Semantic Error [{i+3}]: Invalid value '{value1}'")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Cannot resolve value at token {i+3}")
-                        break
-
-                # Resolve value2
-                if value2 in variables:
-                    val2 = variables[value2]
-                else:
-                    lit_type = get_literal_type(value2)
-                    if lit_type == 'digit':
-                        try:
-                            val2 = int(value2.strip('"\''))
-                        except:
-                            val2 = float(value2.strip('"\''))
-                    elif lit_type == 'word':
-                        val2 = value2.strip('"\'')
-                    elif lit_type == 'bet':
-                        val2 = value2.strip('"\'').lower() == 'real'
-                    else:
-                        if is_valid_identifier(value2):
-                            results.append(f"Semantic Error [{i+4}]: Variable '{value2}' not found")
-                        else:
-                            results.append(f"Semantic Error [{i+4}]: Invalid value '{value2}'")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Cannot resolve value at token {i+4}")
-                        break
-
-                # Perform comparison and assign result
-                variables[var_name] = val1 == val2
-                variable_types[var_name] = 'bet'  # Store type
-                compiled_lines.append(f"bet {var_name} := {value1} {value2} end")
-                detailed_phases["semantic"].append(f"  Comparison: bet {var_name} := {value1} {value2}")
-                bet_result = "Real" if variables[var_name] else "Fake"
-                detailed_phases["semantic"].append(f"    Variable '{var_name}' assigned comparison result: {bet_result} (type: bet)")
-
-                # Add to symbol table
-                scope_level = 0
-                detailed_phases["symbol_table"].append(f"{var_name:<20} {'bet':<15} {scope_level:<12} {memory_offset}")
-                memory_offset += offset_sizes.get('bet', 0)
-
-                i += 6
-                continue
-
-            # Check for operation pattern or simple pattern
-            has_operation = False
-            operation = None
-
-            if i + 6 < len(tokens) and tokens[i+2] == ':' and tokens[i+4] in ['adds', 'minus', 'mul', 'div'] and tokens[i+6] == 'end':
-                has_operation = True
-                operation = tokens[i+4]
-            elif i + 4 >= len(tokens) or tokens[i+2] != ':' or tokens[i+4] != 'end':
-                # Invalid structure
-                if not (i + 6 < len(tokens) and tokens[i+4] in ['adds', 'minus']):
-                    results.append(f"Semantic Error [{i+1}]: Invalid declaration - expected ID : VALUE end")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid declaration at token {i+1}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                    break
-
-            var_name = tokens[i+1]
-            value = tokens[i+3]
-            expected_type = token
-            value_stripped = value.strip('"\'')
-            if has_operation:
-                value2 = tokens[i+5]
-                value2_stripped = value2.strip('"\'')
-            else:
-                value2_stripped = None
-
-            # Check if variable name is a keyword 
-            if var_name in KEYWORDS:
-                results.append(f"Semantic Error [{i+2}]: '{var_name}' is a keyword, cannot use as variable name")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Keyword '{var_name}' cannot be used as variable name at token {i+2}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", f"use a different name, not '{var_name}'")
-                break
-
-            # Check if variable name is an operator
-            if var_name in OPERATORS or var_name in SEPARATORS:
-                error_detail = "mathematical keyword" if var_name in ['adds', 'minus'] else "reserved symbol"
-                results.append(f"Semantic Error [{i+2}]: '{var_name}' is a {error_detail}, cannot use as variable name")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: {error_detail.capitalize()} '{var_name}' cannot be used as variable name at token {i+2}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", f"'{var_name}' is a {error_detail}, use a different name")
-                break
-
-            # Check if variable name contains or is quotes
-            if '"' in var_name or "'" in var_name:
-                results.append(f"Semantic Error [{i+2}]: Variable name cannot contain quotes: '{var_name}'")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Variable name contains quotes at token {i+2}: '{var_name}'")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "remove quotes from variable name")
-                break
-
-            # Check if variable name is valid
-            if not is_valid_identifier(var_name):
-                results.append(f"Semantic Error [{i+2}]: '{var_name}' is not a valid variable name")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Invalid variable name at token {i+2}: '{var_name}'")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "use valid identifier: letters, numbers, underscores")
-                break
-
-            # Check for duplicate variable names
-            if var_name in variables:
-                results.append(f"Semantic Error [{i+2}]: Variable '{var_name}' already declared")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Duplicate variable name '{var_name}' at token {i+2}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", f"use a different variable name, '{var_name}' is already declared")
-                break
-
-            # Type Mismatch Checker
-            actual_type = get_literal_type(value)
-            if actual_type is None:
-                if is_valid_identifier(value):
-                    if value not in variables:
-                        results.append(f"Semantic Error [{i+3}]: Variable '{value}' not found")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Undefined variable at token {i+3}: '{value}'")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value)
-                        break
-                    actual_type = variable_types.get(value, expected_type)
-                else:
-                    results.append(f"Semantic Error [{i+3}]: Variable '{value}' not found")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid value or undefined variable at token {i+3}: '{value}'")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value)
-                    break
-
-            if actual_type != expected_type:
-                results.append(f"Semantic Error [{i+3}]: Type mismatch - expected {expected_type}, got {actual_type or 'invalid'}")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Type mismatch at '{var_name}' - expected {expected_type}, got {actual_type}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"expected {expected_type}, got {actual_type}")
-                break
-
-            # Type check second operand if operation exists
-            if has_operation:
-                actual_type2 = get_literal_type(value2)
-                if actual_type2 is None:
-                    if is_valid_identifier(value2):
-                        if value2 not in variables:
-                            results.append(f"Semantic Error [{i+5}]: Variable '{value2}' not found")
-                            error_occurred = True
-                            detailed_phases["semantic"].append(f"ERROR: Undefined variable at token {i+5}: '{value2}'")
-                            detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value2)
-                            break
-                        actual_type2 = variable_types.get(value2, expected_type)
-                    else:
-                        results.append(f"Semantic Error [{i+5}]: Variable '{value2}' not found")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Invalid value or undefined variable at token {i+5}: '{value2}'")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value2)
-                        break
-
-                if actual_type2 != expected_type:
-                    results.append(f"Semantic Error [{i+5}]: Type mismatch in operation - expected {expected_type}, got {actual_type2 or 'invalid'}")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Type mismatch in operation - expected {expected_type}, got {actual_type2}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"both operands must be {expected_type}")
-                    break
-
-            # Check if minus/div operation is used with word type (not allowed)
-            if has_operation and operation in ['minus', 'div'] and expected_type == 'word':
-                results.append(f"Semantic Error [{i+4}]: {operation.capitalize()} operation is not supported for word (string) type")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: {operation.capitalize()} operation cannot be used with word type at token {i+4}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"{operation.capitalize()} operation is only available for digit type, not word type")
-                break
-
-            # Binding variable to value 
-            if expected_type == 'digit':
-                # Get value from variable or literal
-                if value in variables:
-                    val1 = variables[value]
-                else:
-                    try:
-                        val1 = int(value_stripped)
-                    except:
-                        val1 = float(value_stripped)
-
-                if has_operation:
-                    # Get second value from variable or literal
-                    if value2 in variables:
-                        val2 = variables[value2]
-                    else:
-                        try:
-                            val2 = int(value2_stripped)
-                        except:
-                            val2 = float(value2_stripped)
-
-                    if operation == 'adds':
-                        variables[var_name] = val1 + val2
-                    elif operation == 'minus':
-                        variables[var_name] = val1 - val2
-                    elif operation == 'mul':
-                        variables[var_name] = val1 * val2
-                    elif operation == 'div':
-                        if val2 == 0:
-                            results.append(f"Semantic Error [{i+5}]: Division by zero")
-                            error_occurred = True
-                            detailed_phases["semantic"].append(f"ERROR: Division by zero at token {i+5}")
-                            break
-                        variables[var_name] = val1 / val2
-                else:
-                    variables[var_name] = val1
-
-            elif expected_type == 'word':
-                # Get value from variable or literal
-                if value in variables:
-                    val1 = variables[value]
-                else:
-                    val1 = value_stripped
-
-                if has_operation:
-                    # Get second value from variable or literal
-                    if value2 in variables:
-                        val2 = variables[value2]
-                    else:
-                        val2 = value2_stripped
-
-                    if operation == 'adds':
-                        variables[var_name] = val1 + val2
-                    elif operation == 'mul':
-                        # For word type, mul repeats the string (need numeric multiplier)
-                        try:
-                            multiplier = int(val2) if isinstance(val2, str) else val2
-                            variables[var_name] = val1 * multiplier
-                        except:
-                            results.append(f"Semantic Error [{i+5}]: String multiplication requires numeric multiplier")
-                            error_occurred = True
-                            detailed_phases["semantic"].append(f"ERROR: String multiplication requires numeric multiplier at token {i+5}")
-                            break
-                    elif operation == 'minus' or operation == 'div':
-                        # Minus operation not supported for word type
-                        results.append(f"Semantic Error [{i+4}]: {operation.capitalize()} operation is not supported for word (string) type")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: {operation.capitalize()} operation cannot be used with word type at token {i+4}")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", f"{operation.capitalize()} operation is only available for digit type, not word type")
-                        break
-                else:
-                    variables[var_name] = val1
-
-            elif expected_type == 'bet':
-                # Get value from variable or literal
-                if value in variables:
-                    val1 = variables[value]
-                else:
-                    val1 = value_stripped.lower() == 'real'
-                variables[var_name] = val1
-
-            # Store variable type for later reference
-            variable_types[var_name] = expected_type
-
-            # Compile output
-            if has_operation:
-                compiled_lines.append(f"{expected_type} {var_name} : {value} {operation} {value2} end")
-            else:
-                if expected_type == 'digit':
-                    compiled_lines.append(f"digit {var_name} : {value} end")
-                elif expected_type == 'word':
-                    compiled_lines.append(f"word {var_name} : {value} end")
-                elif expected_type == 'bet':
-                    compiled_lines.append(f"bet {var_name} : {value} end")
-
-            # Semantic detail output
-            if has_operation:
-                detailed_phases["semantic"].append(f"  Declaration: {expected_type} {var_name} : {value} {operation} {value2}")
-                detailed_phases["semantic"].append(f"    Variable '{var_name}' bound to value '{variables[var_name]}' (type: {expected_type})")
-            else:
-                detailed_phases["semantic"].append(f"  Declaration: {expected_type} {var_name} : {value}")
-                detailed_phases["semantic"].append(f"    Variable '{var_name}' bound to value '{value}' (type: {expected_type})")
-
-            # Add to symbol table (formatted as table with scope and offset)
-            scope_level = 0  # Global scope
-            detailed_phases["symbol_table"].append(f"{var_name:<20} {expected_type:<15} {scope_level:<12} {memory_offset}")
-            # Update memory offset for next variable
-            memory_offset += offset_sizes.get(expected_type, 0)
-
-            # Increment by 7 if operation, else 5
-            i += 7 if has_operation else 5
-
-        # Output Statement
-        elif token == 'out':
-            # Check for operation pattern: out VALUE OP VALUE end (5 tokens)
-            # or simple pattern: out VALUE end (3 tokens)
-            has_out_operation = False
-            operation = None
-
-            if i + 4 < len(tokens) and tokens[i+2] in ['adds', 'minus', 'mul', 'div'] and tokens[i+4] == 'end':
-                # 5-token pattern: out VALUE OP VALUE end
-                has_out_operation = True
-                operation = tokens[i+2]
-            elif i + 2 >= len(tokens) or tokens[i+2] != 'end':
-                results.append(f"Semantic Error [{i+1}]: Invalid output - expected out VALUE end or out VALUE OP VALUE end")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Invalid output statement at token {i+1}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "output format: out VALUE end")
-                break
-
-            output_value1 = tokens[i+1]
-
-            # Handle output with operation
-            if has_out_operation:
-                output_value2 = tokens[i+3]
-                compiled_lines.append(f"out {output_value1} {operation} {output_value2} end")
-
-                # Get values for both operands
-                val1 = None
-                val2 = None
-                is_digit_op = False
-
-                # Get first value
-                if output_value1 in variables:
-                    val1 = variables[output_value1]
-                else:
-                    lit_type = get_literal_type(output_value1)
-                    if lit_type == 'digit':
-                        is_digit_op = True
-                        try:
-                            val1 = int(output_value1.strip('"\''))
-                        except:
-                            val1 = float(output_value1.strip('"\''))
-                    elif lit_type == 'word':
-                        val1 = output_value1.strip('"\'')
-                    else:
-                        results.append(f"Semantic Error [{i+1}]: Undefined identifier or invalid value '{output_value1}'")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Invalid output value '{output_value1}'")
-                        break
-
-                # Get second value
-                if output_value2 in variables:
-                    val2 = variables[output_value2]
-                else:
-                    lit_type = get_literal_type(output_value2)
-                    if lit_type == 'digit':
-                        is_digit_op = True
-                        try:
-                            val2 = int(output_value2.strip('"\''))
-                        except:
-                            val2 = float(output_value2.strip('"\''))
-                    elif lit_type == 'word':
-                        val2 = output_value2.strip('"\'')
-                    else:
-                        results.append(f"Semantic Error [{i+3}]: Undefined identifier or invalid value '{output_value2}'")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Invalid output value '{output_value2}'")
-                        break
-
-                # Perform operation and output
-                if operation == 'adds':
-                    result = val1 + val2
-                elif operation == 'minus':
-                    # Minus operation only supported for digit type
-                    if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
-                        # Both are numbers - do subtraction
-                        result = val1 - val2
-                    elif isinstance(val1, str) and isinstance(val2, str):
-                        # String minus operation is not allowed
-                        results.append(f"Semantic Error [{i+2}]: Minus operation is not supported for word (string) type")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Minus operation cannot be used with word type")
-                        break
-                    else:
-                        # Type mismatch
-                        results.append(f"Semantic Error [{i+1}]: Cannot use minus with mixed types")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Type mismatch in minus operation")
-                        break
-                elif operation == 'mul':
-                    result = val1 * val2
-                elif operation == 'div':
-                    if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
-                        if val2 == 0:
-                            results.append(f"Semantic Error [{i+3}]: Division by zero")
-                            error_occurred = True
-                            detailed_phases["semantic"].append(f"ERROR: Division by zero")
-                            break
-                        result = val1 / val2
-                    else:
-                        results.append(f"Semantic Error [{i+2}]: Division operation only works with digits")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Division operation only works with digits")
-                        break
-
-                output_results.append(f"> {result}")
-                detailed_phases["semantic"].append(f"  Output: {output_value1} {operation} {output_value2} = {result}")
-                i += 5
-            else:
-                # Simple output without operation
-                compiled_lines.append(f"out {output_value1} end")
-
-                # Variable output
-                if output_value1 in variables:
-                    output_val = variables[output_value1]
-                    # Convert bet (boolean) values to Real/Fake
-                    if isinstance(output_val, bool):
-                        output_val = "Real" if output_val else "Fake"
-                    output_results.append(f"> {output_val}")
-                    detailed_phases["semantic"].append(f"  Output: Variable '{output_value1}' = {output_val}")
-                # Literal output
-                else:
-                    lit_type = get_literal_type(output_value1)
-                    if lit_type:
-                        # Cache stripped value to avoid redundant .strip() calls
-                        output_stripped = output_value1.strip('"\'')
-                        if lit_type == 'digit':
-                            try:
-                                val = int(output_stripped)
-                            except:
-                                val = float(output_stripped)
-                            output_results.append(f"> {val}")
-                            detailed_phases["semantic"].append(f"  Output: Literal value '{val}' (type: {lit_type})")
-                        elif lit_type == 'word':
-                            output_results.append(f"> {output_stripped}")
-                            detailed_phases["semantic"].append(f"  Output: Literal string '{output_stripped}'")
-                        else:
-                            output_results.append(f"> {output_value1}")
-                            detailed_phases["semantic"].append(f"  Output: Literal value '{output_value1}'")
-                    else:
-                        results.append(f"Semantic Error [{i+1}]: Undefined identifier '{output_value1}'")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Undefined identifier '{output_value1}' at token {i+1}")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", output_value1)
-                        break
-
-                i += 3
-        else:
-            i += 1
-
-    if not error_occurred:
-        results.append("Checking Semantical... OK")
-
-    # Compiled Output
-    if compiled_lines:
-        results.append("Compiled Output:")
-        results.extend(compiled_lines)
-
-    # Output Results (in correct order after compiled output)
-    if output_results:
-        results.extend(output_results)
-
-    # Compiler Status
-    if error_occurred:
-        results.append("Status: SEMANTIC ANALYSIS FAILED")
-        detailed_phases["semantic"].append("Result: [FAILED]")
-    else:
-        results.append("Status: COMPILATION SUCCESS")
-        results.append("Program executed successfully!")
-        detailed_phases["semantic"].append("Result: [PASSED]")
-
-    # Pre-compute phase status to avoid per-frame string operations
-    detailed_phases["phase_status"] = {
-        "lexical": "PASSED" in " ".join(detailed_phases.get("lexical", [])),
-        "syntax": "PASSED" in " ".join(detailed_phases.get("syntax", [])),
-        "semantic": "PASSED" in " ".join(detailed_phases.get("semantic", []))
-    }
-
-    return results, detailed_phases
-
-# ---- EXPLAINABILITY WINDOW ----
-def show_explainability_window(detailed_phases):
-    # Make explainability window proportional to main window size
-    expl_width = max(int(WIDTH * 1.1), 1000)
-    expl_height = max(int(HEIGHT * 1.1), 700)
-    detail_window = pygame.display.set_mode((expl_width, expl_height), pygame.RESIZABLE)
-    pygame.display.set_caption("ProgBlocks: Explainability Layer")
-    detail_running = True
-    scroll_offset = 0
-    size_map = {'digit': 4, 'word': 1, 'bet': 2}  # Width of each datatype
-
-    while detail_running:
-        detail_window.fill(CONSOLE_COLOR)
-        expl_width, expl_height = detail_window.get_size()
-
-        # Calculate drawable area bounds for content
-        content_min_y = 50
-        content_max_y = expl_height - 40
-
-        # Draw header
-        pygame.draw.rect(detail_window, HEADER_BG, (0, 0, expl_width, 55))
-        header_text = font_header.render("COMPILER ANALYSIS PHASES", True, ACCENT_COLOR)
-        detail_window.blit(header_text, (20, 15))
-
-        # Draw separator line below header with neon glow
-        pygame.draw.line(detail_window, (0, 50, 80), (0, 53), (expl_width, 53), 4)
-        pygame.draw.line(detail_window, ACCENT_COLOR, (0, 54), (expl_width, 54), 2)
-
-        y_pos = 70  # Start lower with separator
-        line_height = 18
-
-        # Display each phase
-        for phase_name, phase_color, phase_indent in [
-            ("LEXICAL ANALYSIS", GREEN_TEXT if detailed_phases.get("phase_status", {}).get("lexical", False) else RED_TEXT, 0),
-            ("SYNTAX ANALYSIS", GREEN_TEXT if detailed_phases.get("phase_status", {}).get("syntax", False) else RED_TEXT, 0),
-            ("SEMANTIC ANALYSIS", GREEN_TEXT if detailed_phases.get("phase_status", {}).get("semantic", False) else RED_TEXT, 0)
-        ]:
-            phase_key = phase_name.lower().split()[0]
-
-            # Phase header
-            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                phase_header = font_small.render(phase_name, True, phase_color)
-                detail_window.blit(phase_header, (20 + phase_indent, y_pos - scroll_offset))
-            y_pos += line_height + 5
-
-            # Phase details - improved formatting
-            phase_details = detailed_phases.get(phase_key, [])
-            for detail_line in phase_details:
-                if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                    # Skip empty lines or header lines that start with "PHASE:"
-                    if detail_line.strip() and not detail_line.startswith("PHASE:"):
-                        detail_text = font_console.render(detail_line, True, (200, 200, 200))
-                        detail_window.blit(detail_text, (30 + phase_indent, y_pos - scroll_offset))
-                    y_pos += line_height if detail_line.strip() else 0
-
-            y_pos += 10
-
-        # Display symbol table if there are variables
-        if detailed_phases.get("symbol_table"):
-            y_pos += 5
-            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                symbol_header = font_small.render("SYMBOL TABLE", True, BLUE_TEXT)
-                detail_window.blit(symbol_header, (20, y_pos - scroll_offset))
-            y_pos += line_height + 5
-
-            # Display column headers
-            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                column_header = font_console.render(f"{'Name':<20} {'Type':<15} {'Scope':<10} {'Offset':<10}", True, (150, 150, 150))
-                detail_window.blit(column_header, (30, y_pos - scroll_offset))
-            y_pos += line_height
-
-            # Display separator
-            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                separator = font_console.render("-" * 55, True, (100, 100, 100))
-                detail_window.blit(separator, (30, y_pos - scroll_offset))
-            y_pos += line_height
-
-            # Display symbol table and calculate total byte used
-            total_bytes = 0
-            for symbol_line in detailed_phases.get("symbol_table", []):
-                if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                    symbol_text = font_console.render(symbol_line, True, (200, 200, 200))
-                    detail_window.blit(symbol_text, (30, y_pos - scroll_offset))
-
-                # Calculate bytes for this variable
-                parts = symbol_line.split()
-                if len(parts) >= 2:
-                    var_type = parts[1]
-                    total_bytes += size_map.get(var_type, 0)
-
-                y_pos += line_height
-
-            # Display total bytes used
-            y_pos += 5
-            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                total_text = font_console.render(f"Total Memory Used: {total_bytes} bytes", True, (100, 200, 255))
-                detail_window.blit(total_text, (30, y_pos - scroll_offset))
-            y_pos += line_height + 10
-
-        # Display recovery strategies if there are errors
-        if detailed_phases.get("recovery"):
-            y_pos += 5
-            if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                recovery_header = font_small.render("RECOVERY STRATEGIES", True, (255, 200, 0))
-                detail_window.blit(recovery_header, (20, y_pos - scroll_offset))
-            y_pos += line_height + 5
-
-            for strategy_line in detailed_phases.get("recovery", []):
-                if y_pos - scroll_offset > content_min_y and y_pos - scroll_offset < content_max_y:
-                    strategy_text = font_console.render(strategy_line, True, (100, 200, 255))
-                    detail_window.blit(strategy_text, (30, y_pos - scroll_offset))
-                y_pos += line_height
-
-        # Draw scroll instructions at the bottom with separator
-        pygame.draw.line(detail_window, (0, 50, 80), (0, expl_height - 43), (expl_width, expl_height - 43), 4)
-        pygame.draw.line(detail_window, ACCENT_COLOR, (0, expl_height - 41), (expl_width, expl_height - 41), 2)
-        scroll_text = font_small.render("  Scroll: ScrollWheel  |  Close: ESC", True, (70, 90, 120))
-        detail_window.blit(scroll_text, (20, expl_height - 30))
-
-        pygame.display.flip()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                detail_running = False
-            elif event.type == pygame.VIDEORESIZE:
-                # Handle explainability window resize
-                expl_width, expl_height = event.size[0], event.size[1]
-                detail_window = pygame.display.set_mode((expl_width, expl_height), pygame.RESIZABLE)
-            elif event.type == pygame.MOUSEWHEEL:
-                if event.y > 0:  # Scroll up
-                    scroll_offset = max(0, scroll_offset - 30)
-                elif event.y < 0:  # Scroll down
-                    scroll_offset += 30
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    detail_running = False
-
-        clock.tick(60)
-
-    pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
-    pygame.display.set_caption("ProgBlocks: Block and Compile!")
-
-# ---- HELPER FUNCTIONS FOR RESIZABLE WINDOW ----
-def recalculate_ui_positions():
-    """Recalculate all UI positions based on current window size"""
-    global clear_rect, run_rect, info_rect, zoom_in_rect, zoom_out_rect
-    global workspace_top, workspace_bottom, console_top, console_bottom
-    global dynamic_console_height
-
-    # Header area is fixed at 50px from top
-    workspace_top = HEADER_HEIGHT
-    console_top = HEIGHT - dynamic_console_height
-    workspace_bottom = console_top
-    console_bottom = HEIGHT
-
-    # Constrain console_top to valid range based on console height bounds
-    console_top = max(HEIGHT - MAX_CONSOLE_HEIGHT, console_top)
-    console_top = min(HEIGHT - MIN_CONSOLE_HEIGHT, console_top)
-    workspace_bottom = console_top
-
-    # Buttons in header (right side, top padding of 12px)
-    button_y = 12
-    button_h = 35
-
-    # Right-aligned buttons: INFO, CLEAR, RUN, ZOOM-, ZOOM+
-    # Each button is 80px wide (except zoom buttons at 35px)
-    run_rect = pygame.Rect(WIDTH - 90, button_y, 80, button_h)
-    clear_rect = pygame.Rect(WIDTH - 180, button_y, 80, button_h)
-    info_rect = pygame.Rect(WIDTH - 270, button_y, 80, button_h)
-    zoom_in_rect = pygame.Rect(WIDTH - 360, button_y, 35, button_h)
-    zoom_out_rect = pygame.Rect(WIDTH - 405, button_y, 35, button_h)
-
-
-def get_block_view_rect(block):
-    """Return the on-screen rect for a block with the current zoom/scroll."""
-    return pygame.Rect(
-        int(block.rect.x * zoom_scale),
-        int(block.rect.y * zoom_scale - workspace_scroll_offset),
-        int(block.rect.width * zoom_scale),
-        int(block.rect.height * zoom_scale),
-    )
-
-
-def clamp_block_chain_to_workspace(block):
-    """Keep a block chain inside the workspace without breaking links."""
-    if block.prev_block is not None:
-        return
-
-    chain_blocks = []
-    current = block
-    min_x = current.rect.x
-    min_y = current.rect.y
-    max_right = current.rect.right
-    max_bottom = current.rect.bottom
-
-    while current:
-        chain_blocks.append(current)
-        min_x = min(min_x, current.rect.x)
-        min_y = min(min_y, current.rect.y)
-        max_right = max(max_right, current.rect.right)
-        max_bottom = max(max_bottom, current.rect.bottom)
-        current = current.next_block
-
-    delta_x = 0
-    delta_y = 0
-
-    if min_x < WORKSPACE_LEFT:
-        delta_x = WORKSPACE_LEFT - min_x
-    elif max_right > WIDTH - WORKSPACE_RIGHT_MARGIN:
-        delta_x = (WIDTH - WORKSPACE_RIGHT_MARGIN) - max_right
-
-    if min_y < workspace_top:
-        delta_y = workspace_top - min_y
-    elif max_bottom > workspace_bottom:
-        delta_y = workspace_bottom - max_bottom
-
-    if delta_x or delta_y:
-        block.update_position(block.rect.x + delta_x, block.rect.y + delta_y)
-
-
-def clamp_all_blocks_to_workspace():
-    """Re-clamp all placed block roots after a resize."""
-    for block in placed_blocks:
-        if block.prev_block is None:
-            clamp_block_chain_to_workspace(block)
-
-
-def is_mouse_on_separator(mouse_y):
-    """Check if mouse Y position is near the separator (within SEPARATOR_HEIGHT/2)"""
-    return abs(mouse_y - console_top) <= SEPARATOR_HEIGHT // 2
-
-
-def get_cursor_for_position(mouse_y):
-    """Return appropriate cursor style based on position"""
-    if is_mouse_on_separator(mouse_y):
-        return pygame.SYSTEM_CURSOR_SIZENS  # Vertical resize cursor
-    return pygame.SYSTEM_CURSOR_ARROW
-
-# ---- UI & MAIN LOOP ----
-sidebar_blocks = [Block(t, c, cat, 15 + (i%2)*85, HEADER_HEIGHT + 10 + (i//2)*45, True) for i, (t, c, cat) in enumerate(AVAILABLE_BLOCKS)]
-placed_blocks = []
-dragging_block = None
-editing_block = None
-offset_x, offset_y = 0, 0
-console_output = ["Blueprint ready!", "Drag blocks from the left to start building your program."]
-detailed_phases = {}
-workspace_scroll_offset = 0  # Vertical scroll offset for code workspace
-console_scroll_offset = 0  # Vertical scroll offset for console output
-
-# Draggable separator state
-dragging_separator = False
-separator_mouse_offset = 0
-dynamic_console_height = CONSOLE_HEIGHT_FIXED  # Will change based on drag
-
-# Initialize UI positions (call helper to calculate button positions)
 recalculate_ui_positions()
 
+shared.clock = pygame.time.Clock()
 running = True
-clock = pygame.time.Clock()
 
+# ---- Main Loop ----
 while running:
     screen.fill(BG_COLOR)
 
-    # Sidebar background panel
-    pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, WORKSPACE_LEFT - 1, HEIGHT))
+    # Sidebar panel
+    pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, WORKSPACE_LEFT - 1, shared.HEIGHT))
 
-    # Draw header background
-    pygame.draw.rect(screen, HEADER_BG, (0, 0, WIDTH, HEADER_HEIGHT))
-    # Neon accent border at bottom of header
-    pygame.draw.line(screen, (0, 50, 80), (0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT), 4)
-    pygame.draw.line(screen, ACCENT_COLOR, (0, HEADER_HEIGHT - 1), (WIDTH, HEADER_HEIGHT - 1), 2)
-    # Sidebar/workspace vertical separator (below header)
-    pygame.draw.line(screen, ACCENT_COLOR, (WORKSPACE_LEFT - 1, HEADER_HEIGHT), (WORKSPACE_LEFT - 1, HEIGHT), 1)
+    # Header
+    pygame.draw.rect(screen, HEADER_BG, (0, 0, shared.WIDTH, HEADER_HEIGHT))
+    pygame.draw.line(screen, (0, 50, 80),   (0, HEADER_HEIGHT), (shared.WIDTH, HEADER_HEIGHT), 4)
+    pygame.draw.line(screen, ACCENT_COLOR,  (0, HEADER_HEIGHT - 1), (shared.WIDTH, HEADER_HEIGHT - 1), 2)
+    pygame.draw.line(screen, ACCENT_COLOR,  (WORKSPACE_LEFT - 1, HEADER_HEIGHT),
+                     (WORKSPACE_LEFT - 1, shared.HEIGHT), 1)
 
-    # Title: "Prog" white + "Blocks" accent
-    prog_surf = font_header.render("Prog", True, WHITE)
-    blocks_surf = font_header.render("Blocks", True, ACCENT_COLOR)
-    screen.blit(prog_surf, (16, 15))
+    # Title
+    prog_surf   = shared.font_header.render("Prog",   True, WHITE)
+    blocks_surf = shared.font_header.render("Blocks", True, ACCENT_COLOR)
+    screen.blit(prog_surf,   (16, 15))
     screen.blit(blocks_surf, (16 + prog_surf.get_width(), 15))
-    screen.blit(font_header.render("Blueprint", True, (55, 70, 100)), (WORKSPACE_LEFT + 10, 15))
+    screen.blit(shared.font_header.render("Blueprint", True, (55, 70, 100)), (WORKSPACE_LEFT + 10, 15))
+    screen.blit(shared.font_label.render("PALETTE", True, (45, 55, 80)), (10, HEADER_HEIGHT - 13))
 
-    # Sidebar palette label
-    screen.blit(font_label.render("PALETTE", True, (45, 55, 80)), (10, HEADER_HEIGHT - 13))
-
-    # Draw buttons with tech border style (dark body + colored border)
-    buttons_info = [
-        (info_rect, "INFO", BLUE_TEXT),
-        (clear_rect, "CLEAR", CLEAR_BTN_COLOR),
-        (run_rect, "RUN", RUN_BTN_COLOR),
-    ]
-    for rect, label, color in buttons_info:
-        dark_btn = (max(0, color[0] - 110), max(0, color[1] - 110), max(0, color[2] - 110))
-        pygame.draw.rect(screen, dark_btn, rect, border_radius=4)
+    # Header buttons
+    for rect, label, color in [
+        (shared.info_rect,  "INFO",  BLUE_TEXT),
+        (shared.clear_rect, "CLEAR", CLEAR_BTN_COLOR),
+        (shared.run_rect,   "RUN",   RUN_BTN_COLOR),
+    ]:
+        dark = (max(0, color[0] - 110), max(0, color[1] - 110), max(0, color[2] - 110))
+        pygame.draw.rect(screen, dark,  rect, border_radius=4)
         pygame.draw.rect(screen, color, rect, 1, border_radius=4)
-        text = font_small.render(label, True, color)
-        screen.blit(text, (rect.centerx - text.get_width()//2, rect.centery - text.get_height()//2))
+        txt = shared.font_small.render(label, True, color)
+        screen.blit(txt, (rect.centerx - txt.get_width()//2, rect.centery - txt.get_height()//2))
 
     # Zoom buttons
-    pygame.draw.rect(screen, (10, 18, 30), zoom_out_rect, border_radius=4)
-    pygame.draw.rect(screen, ACCENT_COLOR, zoom_out_rect, 1, border_radius=4)
-    minus_text = font_small.render("-", True, ACCENT_COLOR)
-    screen.blit(minus_text, (zoom_out_rect.centerx - minus_text.get_width()//2, zoom_out_rect.centery - minus_text.get_height()//2))
+    for zrect, label in [(shared.zoom_out_rect, "-"), (shared.zoom_in_rect, "+")]:
+        pygame.draw.rect(screen, (10, 18, 30), zrect, border_radius=4)
+        pygame.draw.rect(screen, ACCENT_COLOR, zrect, 1, border_radius=4)
+        zt = shared.font_small.render(label, True, ACCENT_COLOR)
+        screen.blit(zt, (zrect.centerx - zt.get_width()//2, zrect.centery - zt.get_height()//2))
 
-    pygame.draw.rect(screen, (10, 18, 30), zoom_in_rect, border_radius=4)
-    pygame.draw.rect(screen, ACCENT_COLOR, zoom_in_rect, 1, border_radius=4)
-    plus_text = font_small.render("+", True, ACCENT_COLOR)
-    screen.blit(plus_text, (zoom_in_rect.centerx - plus_text.get_width()//2, zoom_in_rect.centery - plus_text.get_height()//2))
+    zoom_lbl = shared.font_label.render(f"{int(shared.zoom_scale * 100)}%", True, (70, 90, 120))
+    screen.blit(zoom_lbl, (shared.zoom_in_rect.right + 6,
+                            shared.zoom_in_rect.centery - zoom_lbl.get_height()//2))
 
-    # Zoom level indicator between zoom buttons and INFO button
-    zoom_lbl = font_label.render(f"{int(zoom_scale * 100)}%", True, (70, 90, 120))
-    screen.blit(zoom_lbl, (zoom_in_rect.right + 6, zoom_in_rect.centery - zoom_lbl.get_height() // 2))
+    # Workspace
+    ws_height = shared.workspace_bottom - shared.workspace_top
+    pygame.draw.rect(screen, WORKSPACE_COLOR,
+                     (WORKSPACE_LEFT, shared.workspace_top,
+                      shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, ws_height))
 
-    # Workspace area
-    workspace_height = workspace_bottom - workspace_top
-    pygame.draw.rect(screen, WORKSPACE_COLOR, (WORKSPACE_LEFT, workspace_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, workspace_height))
-
-    # Dot grid in workspace
-    screen.set_clip(pygame.Rect(WORKSPACE_LEFT, workspace_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, workspace_height))
-    dot_offset_y = int(workspace_scroll_offset) % 20
-    for gx in range(WORKSPACE_LEFT + 10, WIDTH - WORKSPACE_RIGHT_MARGIN, 20):
-        for gy in range(workspace_top + (20 - dot_offset_y) % 20, workspace_bottom, 20):
+    # Dot grid
+    screen.set_clip(pygame.Rect(WORKSPACE_LEFT, shared.workspace_top,
+                                shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, ws_height))
+    dot_oy = int(shared.workspace_scroll_offset) % 20
+    for gx in range(WORKSPACE_LEFT + 10, shared.WIDTH - WORKSPACE_RIGHT_MARGIN, 20):
+        for gy in range(shared.workspace_top + (20 - dot_oy) % 20, shared.workspace_bottom, 20):
             pygame.draw.circle(screen, GRID_DOT_COLOR, (gx, gy), 1)
     screen.set_clip(None)
 
-    # Console area - draw BEFORE setting clip
-    pygame.draw.rect(screen, CONSOLE_COLOR, (WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, dynamic_console_height))
-    # Console header bar
-    pygame.draw.rect(screen, (12, 14, 24), (WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, 20))
-    pygame.draw.line(screen, (25, 35, 55), (WORKSPACE_LEFT, console_top + 20), (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top + 20), 1)
-    console_lbl = font_label.render("OUTPUT", True, ACCENT_COLOR)
-    screen.blit(console_lbl, (WORKSPACE_LEFT + 10, console_top + 5))
+    # Console area
+    pygame.draw.rect(screen, CONSOLE_COLOR,
+                     (WORKSPACE_LEFT, shared.console_top,
+                      shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN,
+                      shared.dynamic_console_height))
+    pygame.draw.rect(screen, (12, 14, 24),
+                     (WORKSPACE_LEFT, shared.console_top,
+                      shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, 20))
+    pygame.draw.line(screen, (25, 35, 55),
+                     (WORKSPACE_LEFT, shared.console_top + 20),
+                     (shared.WIDTH - WORKSPACE_RIGHT_MARGIN, shared.console_top + 20), 1)
+    screen.blit(shared.font_label.render("OUTPUT", True, ACCENT_COLOR),
+                (WORKSPACE_LEFT + 10, shared.console_top + 5))
 
-    # Separator with neon glow effect
+    # Separator
     sep_color = (0, 220, 255) if dragging_separator else ACCENT_COLOR
-    pygame.draw.line(screen, (0, 50, 80), (WORKSPACE_LEFT, console_top), (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top), 5)
-    pygame.draw.line(screen, sep_color, (WORKSPACE_LEFT, console_top), (WIDTH - WORKSPACE_RIGHT_MARGIN, console_top), 2)
-    handle_x = (WORKSPACE_LEFT + WIDTH - WORKSPACE_RIGHT_MARGIN) // 2
-    for hx in [handle_x - 15, handle_x, handle_x + 15]:
-        pygame.draw.circle(screen, sep_color, (hx, console_top), 2)
+    pygame.draw.line(screen, (0, 50, 80),
+                     (WORKSPACE_LEFT, shared.console_top),
+                     (shared.WIDTH - WORKSPACE_RIGHT_MARGIN, shared.console_top), 5)
+    pygame.draw.line(screen, sep_color,
+                     (WORKSPACE_LEFT, shared.console_top),
+                     (shared.WIDTH - WORKSPACE_RIGHT_MARGIN, shared.console_top), 2)
+    hx = (WORKSPACE_LEFT + shared.WIDTH - WORKSPACE_RIGHT_MARGIN) // 2
+    for hxi in [hx - 15, hx, hx + 15]:
+        pygame.draw.circle(screen, sep_color, (hxi, shared.console_top), 2)
 
-    # Keep placed blocks visually inside the blueprint area so they never draw
-    # on top of the Blox sidebar when resizing or scrolling.
-    workspace_clip = pygame.Rect(
-        WORKSPACE_LEFT,
-        workspace_top,
-        WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN,
-        workspace_height,
-    )
-    screen.set_clip(workspace_clip)
-
-    # Draw placed blocks with scroll and zoom offset applied (BEFORE sidebar so sidebar appears on top)
-    for b in placed_blocks:
-        draw_rect = get_block_view_rect(b)
-        if draw_rect.y + draw_rect.height <= workspace_bottom:
-            original_rect = b.rect
-            b.rect = draw_rect
+    # Draw placed blocks (clipped to workspace)
+    ws_clip = pygame.Rect(WORKSPACE_LEFT, shared.workspace_top,
+                          shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, ws_height)
+    screen.set_clip(ws_clip)
+    for b in shared.placed_blocks:
+        dr = get_block_view_rect(b)
+        if dr.y + dr.height <= shared.workspace_bottom:
+            orig = b.rect
+            b.rect = dr
             b.draw(screen)
-            b.rect = original_rect
-
-    # Reset clipping before drawing sidebar
+            b.rect = orig
     screen.set_clip(None)
 
-    # Draw sidebar blocks (drawn AFTER placed blocks so they appear on top)
-    for b in sidebar_blocks: b.draw(screen)
+    # Sidebar blocks on top
+    for b in sidebar_blocks:
+        b.draw(screen)
 
-    # Draw console output with scroll support
-    line_height = 17  # Height of each line
-    console_start_y = console_top + 24  # Starting Y position in console (offset for OUTPUT header bar)
-    console_max_y = console_bottom  # Maximum Y position
-
-    # Set clipping rect for console area to prevent text overflow
-    console_clip = pygame.Rect(WORKSPACE_LEFT, console_top, WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, dynamic_console_height)
-    screen.set_clip(console_clip)
-
-    # Draw all lines with scroll offset
-    for i, line in enumerate(console_output):
-        # Calculate Y position with scroll offset
-        y_pos = console_start_y + (i * line_height) - console_scroll_offset
-
-        # Only draw if within console area
-        if y_pos > console_top and y_pos < console_max_y:
+    # Console output
+    line_h        = 17
+    con_start_y   = shared.console_top + 24
+    screen.set_clip(pygame.Rect(WORKSPACE_LEFT, shared.console_top,
+                                shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN,
+                                shared.dynamic_console_height))
+    for idx, line in enumerate(console_output):
+        y_pos = con_start_y + idx * line_h - shared.console_scroll_offset
+        if shared.console_top < y_pos < shared.console_bottom:
             if line.startswith(">"):
-                color = ACCENT_COLOR
-            elif "PASSED" in line or "OK" in line or "SUCCESS" in line or "ready" in line or "Drag" in line or "cleared" in line:
-                color = GREEN_TEXT
+                col = ACCENT_COLOR
+            elif any(k in line for k in ("PASSED", "OK", "SUCCESS", "ready", "Drag", "cleared")):
+                col = GREEN_TEXT
             elif "Error" in line or "FAILED" in line:
-                color = RED_TEXT
+                col = RED_TEXT
             elif "Compiled Output:" in line:
-                color = BLUE_TEXT
+                col = BLUE_TEXT
             else:
-                color = (155, 165, 185)
+                col = (155, 165, 185)
             try:
-                screen.blit(font_console.render(line, True, color), (WORKSPACE_LEFT + 10, y_pos))
-            except:
+                screen.blit(shared.font_console.render(line, True, col),
+                            (WORKSPACE_LEFT + 10, y_pos))
+            except Exception:
                 pass
-
-    # Reset clipping
     screen.set_clip(None)
 
+    # ---- Events ----
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
 
         elif event.type == pygame.VIDEORESIZE:
-            # Handle window resize event
-            WIDTH, HEIGHT = max(event.size[0], MINIMUM_WIDTH), max(event.size[1], MINIMUM_HEIGHT)
-            screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+            shared.WIDTH  = max(event.size[0], MINIMUM_WIDTH)
+            shared.HEIGHT = max(event.size[1], MINIMUM_HEIGHT)
+            screen = pygame.display.set_mode((shared.WIDTH, shared.HEIGHT), pygame.RESIZABLE)
             recalculate_ui_positions()
             clamp_all_blocks_to_workspace()
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            mouse_x, mouse_y = event.pos
+            mx, my = event.pos
 
-            # Check for separator drag FIRST (highest priority)
-            if is_mouse_on_separator(mouse_y):
+            if is_mouse_on_separator(my):
                 dragging_separator = True
-                separator_mouse_offset = mouse_y - console_top
-                continue  # Skip to next event
+                separator_mouse_offset = my - shared.console_top
+                continue
 
             sidebar_hit = False
             for b in sidebar_blocks:
-                if b.rect.collidepoint(mouse_x, mouse_y):
-                    new_block = Block(
-                        b.text,
-                        b.color,
-                        b.category,
-                        int(mouse_x / zoom_scale),
-                        int((mouse_y + workspace_scroll_offset) / zoom_scale),
-                    )
-                    new_block.dragging = True
-                    dragging_block = new_block
-                    offset_x = 0
-                    offset_y = 0
-                    placed_blocks.append(new_block)
+                if b.rect.collidepoint(mx, my):
+                    nb = Block(b.text, b.color, b.category,
+                               int(mx / shared.zoom_scale),
+                               int((my + shared.workspace_scroll_offset) / shared.zoom_scale))
+                    nb.dragging = True
+                    shared.dragging_block = nb
+                    shared.offset_x = 0
+                    shared.offset_y = 0
+                    shared.placed_blocks.append(nb)
                     sidebar_hit = True
                     break
-            
-            if not sidebar_hit:
-                for b in reversed(placed_blocks):
-                    view_rect = get_block_view_rect(b)
-                    if view_rect.collidepoint(mouse_x, mouse_y):
-                        if b.category == "Editable":
-                            if editing_block and editing_block != b:
-                                editing_block.is_editing = False
-                            b.is_editing = True
-                            editing_block = b
-                            b.dragging = True
-                            dragging_block = b
-                            offset_x = mouse_x - view_rect.x
-                            offset_y = mouse_y - view_rect.y
-                            break  # Just enter edit mode and mark for potential drag, don't disconnect yet
 
-                        # If this block is in a condition slot, pull it out and drag
+            if not sidebar_hit:
+                for b in reversed(shared.placed_blocks):
+                    vr = get_block_view_rect(b)
+                    if vr.collidepoint(mx, my):
+                        if b.category == "Editable":
+                            if shared.editing_block and shared.editing_block != b:
+                                shared.editing_block.is_editing = False
+                            b.is_editing = True
+                            shared.editing_block = b
+                            b.dragging = True
+                            shared.dragging_block = b
+                            shared.offset_x = mx - vr.x
+                            shared.offset_y = my - vr.y
+                            break
+
                         if b.in_condition_of is not None:
                             parent = b.in_condition_of
                             if b in parent.condition_blocks:
@@ -1642,246 +223,213 @@ while running:
                             parent.update_size()
                             parent.update_position(parent.rect.x, parent.rect.y)
                             b.dragging = True
-                            dragging_block = b
-                            offset_x = mouse_x - view_rect.x
-                            offset_y = mouse_y - view_rect.y
+                            shared.dragging_block = b
+                            shared.offset_x = mx - vr.x
+                            shared.offset_y = my - vr.y
                             break
 
-                        # Only disconnect and drag non-editable blocks
                         if b.prev_block:
                             b.prev_block.next_block = b.next_block
                         if b.next_block:
                             b.next_block.prev_block = b.prev_block
-
                         b.prev_block = None
                         b.next_block = None
                         b.dragging = True
-                        dragging_block = b
-                        offset_x = mouse_x - view_rect.x
-                        offset_y = mouse_y - view_rect.y
+                        shared.dragging_block = b
+                        shared.offset_x = mx - vr.x
+                        shared.offset_y = my - vr.y
                         break
 
-                if zoom_in_rect.collidepoint(mouse_x, mouse_y):
-                    zoom_scale = min(ZOOM_MAX, zoom_scale + ZOOM_STEP)
-                elif zoom_out_rect.collidepoint(mouse_x, mouse_y):
-                    zoom_scale = max(ZOOM_MIN, zoom_scale - ZOOM_STEP)
-                elif info_rect.collidepoint(mouse_x, mouse_y):
+                if shared.zoom_in_rect.collidepoint(mx, my):
+                    shared.zoom_scale = min(ZOOM_MAX, shared.zoom_scale + ZOOM_STEP)
+                elif shared.zoom_out_rect.collidepoint(mx, my):
+                    shared.zoom_scale = max(ZOOM_MIN, shared.zoom_scale - ZOOM_STEP)
+                elif shared.info_rect.collidepoint(mx, my):
                     if detailed_phases:
                         show_explainability_window(detailed_phases)
-                elif clear_rect.collidepoint(mouse_x, mouse_y):
-                    placed_blocks.clear()
+                elif shared.clear_rect.collidepoint(mx, my):
+                    shared.placed_blocks.clear()
                     console_output = ["Workspace cleared."]
                     detailed_phases = {}
-                    if editing_block:
-                        editing_block.is_editing = False
-                        editing_block = None
-                elif run_rect.collidepoint(mouse_x, mouse_y):
-                    console_output, detailed_phases = evaluate_compiler_logic(placed_blocks)
-        
+                    if shared.editing_block:
+                        shared.editing_block.is_editing = False
+                        shared.editing_block = None
+                elif shared.run_rect.collidepoint(mx, my):
+                    console_output, detailed_phases = evaluate_compiler_logic(shared.placed_blocks)
+
         elif event.type == pygame.MOUSEBUTTONUP:
-            # Finalize separator drag
             if dragging_separator:
                 dragging_separator = False
-                # Clamp all blocks to ensure they fit within new workspace bounds
                 clamp_all_blocks_to_workspace()
 
-            if dragging_block:
-                dragging_block.dragging = False
-                dragging_block.update_size()
+            if shared.dragging_block:
+                db = shared.dragging_block
+                db.dragging = False
+                db.update_size()
 
-                # --- Condition-slot snap detection ---
-                snapped_to_condition = False
-                if dragging_block.category != "Conditional":
-                    for cond in placed_blocks:
-                        if cond.category == "Conditional" and cond != dragging_block:
-                            cond_view = get_block_view_rect(cond)
-                            slot_x = cond_view.x + int(cond.keyword_part_width * zoom_scale)
-                            slot_rect = pygame.Rect(slot_x, cond_view.y,
-                                                    cond_view.right - slot_x, cond_view.height)
-                            drag_view = get_block_view_rect(dragging_block)
-                            if slot_rect.collidepoint(drag_view.centerx, drag_view.centery):
-                                # Detach from any chain
-                                if dragging_block.prev_block:
-                                    dragging_block.prev_block.next_block = dragging_block.next_block
-                                if dragging_block.next_block:
-                                    dragging_block.next_block.prev_block = dragging_block.prev_block
-                                dragging_block.prev_block = None
-                                dragging_block.next_block = None
-                                dragging_block.in_condition_of = cond
-                                if dragging_block not in cond.condition_blocks:
-                                    cond.condition_blocks.append(dragging_block)
-                                # Ensure condition block draws on top of its parent's background
-                                if dragging_block in placed_blocks:
-                                    placed_blocks.remove(dragging_block)
-                                    placed_blocks.append(dragging_block)
+                # Condition-slot snap
+                snapped = False
+                if db.category != "Conditional":
+                    for cond in shared.placed_blocks:
+                        if cond.category == "Conditional" and cond != db:
+                            cv = get_block_view_rect(cond)
+                            slot_x = cv.x + int(cond.keyword_part_width * shared.zoom_scale)
+                            slot_rect = pygame.Rect(slot_x, cv.y, cv.right - slot_x, cv.height)
+                            dv = get_block_view_rect(db)
+                            if slot_rect.collidepoint(dv.centerx, dv.centery):
+                                if db.prev_block:
+                                    db.prev_block.next_block = db.next_block
+                                if db.next_block:
+                                    db.next_block.prev_block = db.prev_block
+                                db.prev_block = db.next_block = None
+                                db.in_condition_of = cond
+                                if db not in cond.condition_blocks:
+                                    cond.condition_blocks.append(db)
+                                if db in shared.placed_blocks:
+                                    shared.placed_blocks.remove(db)
+                                    shared.placed_blocks.append(db)
                                 cond.update_size()
                                 cond.update_position(cond.rect.x, cond.rect.y)
-                                snapped_to_condition = True
+                                snapped = True
                                 break
 
-                if not snapped_to_condition:
-                    for other in placed_blocks:
-                        if other != dragging_block and other.next_block is None:
-                            # Only allow connections if parent block is within bounds
-                            if other.rect.y >= workspace_top and other.rect.y < workspace_bottom:
-                                # Check for VERTICAL connection (block below another)
-                                if (abs(dragging_block.rect.top - other.rect.bottom) < 20 and
-                                    abs(dragging_block.rect.centerx - other.rect.centerx) < 20):
-                                    # Check if vertical connection would keep block in bounds
-                                    new_y = other.rect.bottom + 2
-                                    if new_y >= workspace_top and new_y + dragging_block.rect.height <= workspace_bottom:
-                                        other.next_block = dragging_block
+                if not snapped:
+                    for other in shared.placed_blocks:
+                        if other != db and other.next_block is None:
+                            if other.rect.y >= shared.workspace_top and other.rect.y < shared.workspace_bottom:
+                                # Vertical connection
+                                if (abs(db.rect.top - other.rect.bottom) < 20 and
+                                        abs(db.rect.centerx - other.rect.centerx) < 20):
+                                    ny = other.rect.bottom + 2
+                                    if shared.workspace_top <= ny and ny + db.rect.height <= shared.workspace_bottom:
+                                        other.next_block = db
                                         other.connection_direction = "vertical"
-                                        dragging_block.prev_block = other
-                                        dragging_block.update_position(other.rect.x, new_y)
+                                        db.prev_block = other
+                                        db.update_position(other.rect.x, ny)
                                         break
-                                # Check for HORIZONTAL connection (block to the right of another)
-                                elif (abs(dragging_block.rect.left - other.rect.right) < 20 and
-                                      abs(dragging_block.rect.centery - other.rect.centery) < 20):
-                                    new_x = other.rect.right + 2
-                                    new_y = other.rect.y
-                                    if (new_x >= WORKSPACE_LEFT and new_x + dragging_block.rect.width <= WIDTH - WORKSPACE_RIGHT_MARGIN and
-                                        new_y >= workspace_top and new_y < workspace_bottom):
-                                        # If dropping to the right of a Conditional or a condition block,
-                                        # extend the condition slot instead of making a chain link
+                                # Horizontal connection
+                                elif (abs(db.rect.left - other.rect.right) < 20 and
+                                      abs(db.rect.centery - other.rect.centery) < 20):
+                                    nx = other.rect.right + 2
+                                    ny = other.rect.y
+                                    if (nx >= WORKSPACE_LEFT and
+                                            nx + db.rect.width <= shared.WIDTH - WORKSPACE_RIGHT_MARGIN and
+                                            shared.workspace_top <= ny < shared.workspace_bottom):
                                         if other.category == "Conditional":
-                                            cond_parent = other
+                                            cp = other
                                         elif other.in_condition_of is not None:
-                                            cond_parent = other.in_condition_of
+                                            cp = other.in_condition_of
                                         else:
-                                            cond_parent = None
-                                        if cond_parent is not None:
-                                            dragging_block.in_condition_of = cond_parent
-                                            if dragging_block not in cond_parent.condition_blocks:
-                                                cond_parent.condition_blocks.append(dragging_block)
-                                            if dragging_block in placed_blocks:
-                                                placed_blocks.remove(dragging_block)
-                                                placed_blocks.append(dragging_block)
-                                            cond_parent.update_size()
-                                            cond_parent.update_position(cond_parent.rect.x, cond_parent.rect.y)
+                                            cp = None
+                                        if cp is not None:
+                                            db.in_condition_of = cp
+                                            if db not in cp.condition_blocks:
+                                                cp.condition_blocks.append(db)
+                                            if db in shared.placed_blocks:
+                                                shared.placed_blocks.remove(db)
+                                                shared.placed_blocks.append(db)
+                                            cp.update_size()
+                                            cp.update_position(cp.rect.x, cp.rect.y)
                                         else:
-                                            other.next_block = dragging_block
+                                            other.next_block = db
                                             other.connection_direction = "horizontal"
-                                            dragging_block.prev_block = other
-                                            dragging_block.update_position(new_x, new_y)
+                                            db.prev_block = other
+                                            db.update_position(nx, ny)
                                         break
 
-                def _remove_dragging_block():
-                    if dragging_block.category == "Conditional":
-                        for cb in dragging_block.condition_blocks:
+                def _remove_db():
+                    if db.category == "Conditional":
+                        for cb in db.condition_blocks:
                             cb.in_condition_of = None
-                            if cb in placed_blocks:
-                                placed_blocks.remove(cb)
-                        dragging_block.condition_blocks.clear()
-                    if dragging_block.prev_block:
-                        dragging_block.prev_block.next_block = dragging_block.next_block
-                    if dragging_block.next_block:
-                        dragging_block.next_block.prev_block = dragging_block.prev_block
-                    dragging_block.prev_block = None
-                    dragging_block.next_block = None
-                    if dragging_block in placed_blocks:
-                        placed_blocks.remove(dragging_block)
+                            if cb in shared.placed_blocks:
+                                shared.placed_blocks.remove(cb)
+                        db.condition_blocks.clear()
+                    if db.prev_block:
+                        db.prev_block.next_block = db.next_block
+                    if db.next_block:
+                        db.next_block.prev_block = db.prev_block
+                    db.prev_block = db.next_block = None
+                    if db in shared.placed_blocks:
+                        shared.placed_blocks.remove(db)
 
-                if dragging_block.rect.right < WORKSPACE_LEFT and dragging_block not in sidebar_blocks:
-                    _remove_dragging_block()
+                if db.rect.right < WORKSPACE_LEFT and db not in sidebar_blocks:
+                    _remove_db()
+                if db in shared.placed_blocks and db.rect.bottom < shared.workspace_top:
+                    _remove_db()
+                if db in shared.placed_blocks and db.rect.x > shared.WIDTH - WORKSPACE_RIGHT_MARGIN:
+                    _remove_db()
+                if db in shared.placed_blocks and db.rect.y > shared.workspace_bottom:
+                    _remove_db()
 
-                if dragging_block in placed_blocks and dragging_block.rect.bottom < workspace_top:
-                    _remove_dragging_block()
-
-                if dragging_block in placed_blocks and dragging_block.rect.x > WIDTH - WORKSPACE_RIGHT_MARGIN:
-                    _remove_dragging_block()
-
-                if dragging_block in placed_blocks and dragging_block.rect.y > workspace_bottom:
-                    _remove_dragging_block()
-
-                # Reorganize nesting based on spatial position after all blocks are placed
-                reorganize_nesting(placed_blocks)
-
-                dragging_block = None
+                reorganize_nesting(shared.placed_blocks)
+                shared.dragging_block = None
 
         elif event.type == pygame.MOUSEMOTION:
             if dragging_separator:
-                new_console_top = event.pos[1] - separator_mouse_offset
-
-                # Clamp console height to valid range
-                new_console_top = max(HEIGHT - MAX_CONSOLE_HEIGHT, new_console_top)
-                new_console_top = min(HEIGHT - MIN_CONSOLE_HEIGHT, new_console_top)
-
-                # Update dynamic height
-                new_height = HEIGHT - new_console_top
-                if new_height != dynamic_console_height:
-                    dynamic_console_height = new_height
-                    # Recalculate UI positions with new console height
+                new_top = event.pos[1] - separator_mouse_offset
+                new_top = max(shared.HEIGHT - MAX_CONSOLE_HEIGHT, new_top)
+                new_top = min(shared.HEIGHT - MIN_CONSOLE_HEIGHT, new_top)
+                new_h = shared.HEIGHT - new_top
+                if new_h != shared.dynamic_console_height:
+                    shared.dynamic_console_height = new_h
                     recalculate_ui_positions()
 
-            if dragging_block:
-                # If dragging an editable block that hasn't been disconnected yet, disconnect it now
-                if dragging_block.category == "Editable" and dragging_block.prev_block is not None:
-                    if dragging_block.prev_block:
-                        dragging_block.prev_block.next_block = dragging_block.next_block
-                    if dragging_block.next_block:
-                        dragging_block.next_block.prev_block = dragging_block.prev_block
-                    dragging_block.prev_block = None
-                    dragging_block.next_block = None
-
-                dragging_block.rect.x = int((event.pos[0] - offset_x) / zoom_scale)
-                dragging_block.rect.y = int((event.pos[1] + workspace_scroll_offset - offset_y) / zoom_scale)
+            if shared.dragging_block:
+                db = shared.dragging_block
+                if db.category == "Editable" and db.prev_block is not None:
+                    if db.prev_block:
+                        db.prev_block.next_block = db.next_block
+                    if db.next_block:
+                        db.next_block.prev_block = db.prev_block
+                    db.prev_block = db.next_block = None
+                db.rect.x = int((event.pos[0] - shared.offset_x) / shared.zoom_scale)
+                db.rect.y = int((event.pos[1] + shared.workspace_scroll_offset - shared.offset_y) / shared.zoom_scale)
 
         elif event.type == pygame.MOUSEWHEEL:
-            # Mouse wheel scrolling - Ctrl+Scroll for zoom, regular scroll for console
-            mouse_x, mouse_y = pygame.mouse.get_pos()
-
-            # Ctrl+Scroll for zoom in workspace
+            mx, my = pygame.mouse.get_pos()
             if pygame.key.get_mods() & pygame.KMOD_CTRL:
-                if event.y > 0:  # Scroll up = zoom in
-                    zoom_scale = min(ZOOM_MAX, zoom_scale + ZOOM_STEP)
-                elif event.y < 0:  # Scroll down = zoom out
-                    zoom_scale = max(ZOOM_MIN, zoom_scale - ZOOM_STEP)
-            # Regular scroll in console area
-            elif WORKSPACE_LEFT < mouse_x < WIDTH - WORKSPACE_RIGHT_MARGIN and console_top < mouse_y < console_bottom:
-                if event.y > 0:  # Scroll up
-                    console_scroll_offset = max(0, console_scroll_offset - 30)
-                elif event.y < 0:  # Scroll down
-                    max_console_scroll = max(0, (len(console_output) - 7) * 17)
-                    console_scroll_offset = min(console_scroll_offset + 30, max_console_scroll)
-        
+                if event.y > 0:
+                    shared.zoom_scale = min(ZOOM_MAX, shared.zoom_scale + ZOOM_STEP)
+                elif event.y < 0:
+                    shared.zoom_scale = max(ZOOM_MIN, shared.zoom_scale - ZOOM_STEP)
+            elif (WORKSPACE_LEFT < mx < shared.WIDTH - WORKSPACE_RIGHT_MARGIN and
+                  shared.console_top < my < shared.console_bottom):
+                if event.y > 0:
+                    shared.console_scroll_offset = max(0, shared.console_scroll_offset - 30)
+                elif event.y < 0:
+                    max_cs = max(0, (len(console_output) - 7) * 17)
+                    shared.console_scroll_offset = min(shared.console_scroll_offset + 30, max_cs)
+
         elif event.type == pygame.KEYDOWN:
-            if editing_block:
+            if shared.editing_block:
                 if event.key == pygame.K_BACKSPACE:
-                    if len(editing_block.text) > 0:
-                        editing_block.text = editing_block.text[:-1]
-                    editing_block.update_size()
-                elif event.key == pygame.K_RETURN or event.key == pygame.K_ESCAPE:
-                    editing_block.is_editing = False
-                    editing_block.update_size()
-                    editing_block = None
+                    if shared.editing_block.text:
+                        shared.editing_block.text = shared.editing_block.text[:-1]
+                    shared.editing_block.update_size()
+                elif event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                    shared.editing_block.is_editing = False
+                    shared.editing_block.update_size()
+                    shared.editing_block = None
                 else:
                     try:
-                        editing_block.text += event.unicode
-                        editing_block.update_size()
-                    except:
+                        shared.editing_block.text += event.unicode
+                        shared.editing_block.update_size()
+                    except Exception:
                         pass
-            # Scroll workspace with arrow keys (works even when editing)
+
             if event.key == pygame.K_UP:
-                workspace_scroll_offset = max(0, workspace_scroll_offset - 30)
+                shared.workspace_scroll_offset = max(0, shared.workspace_scroll_offset - 30)
             elif event.key == pygame.K_DOWN:
-                # Calculate maximum scroll based on deepest block
-                if placed_blocks:
-                    deepest_block = max(placed_blocks, key=lambda b: b.rect.bottom)
-                    max_scroll = max(0, deepest_block.rect.bottom - 500)
-                else:
-                    max_scroll = 0
-                workspace_scroll_offset = min(workspace_scroll_offset + 30, max_scroll)
-            # Scroll console with Page Up/Page Down keys
+                max_s = max(0, max((b.rect.bottom for b in shared.placed_blocks), default=0) - 500)
+                shared.workspace_scroll_offset = min(shared.workspace_scroll_offset + 30, max_s)
             elif event.key == pygame.K_PAGEUP:
-                console_scroll_offset = max(0, console_scroll_offset - 50)
+                shared.console_scroll_offset = max(0, shared.console_scroll_offset - 50)
             elif event.key == pygame.K_PAGEDOWN:
-                # Calculate maximum scroll based on number of lines
-                max_console_scroll = max(0, (len(console_output) - 9) * 17)
-                console_scroll_offset = min(console_scroll_offset + 50, max_console_scroll)
-    
+                max_cs = max(0, (len(console_output) - 9) * 17)
+                shared.console_scroll_offset = min(shared.console_scroll_offset + 50, max_cs)
+
     pygame.display.flip()
-    clock.tick(60)
+    shared.clock.tick(60)
 
 pygame.quit()
 sys.exit()

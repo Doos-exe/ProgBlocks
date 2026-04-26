@@ -1,0 +1,16 @@
+DATE: 04/25/26
+
+Updates:
+- UI Changes
+- Added Claude.md
+- Fixing Conditional Blocks
+
+To Update:
+- Conditional Blocks
+  - Rename
+  - Add new operators for conditions
+  - Add a then block
+  - Fix the logic and structure
+- Logo
+- Sound effects
+- OOP
