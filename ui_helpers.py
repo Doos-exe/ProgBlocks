@@ -28,7 +28,7 @@ def recalculate_ui_positions():
 
 def get_block_view_rect(block):
     return pygame.Rect(
-        int(block.rect.x * shared.zoom_scale),
+        int(block.rect.x * shared.zoom_scale - shared.workspace_scroll_offset_x),
         int(block.rect.y * shared.zoom_scale - shared.workspace_scroll_offset),
         int(block.rect.width  * shared.zoom_scale),
         int(block.rect.height * shared.zoom_scale),

@@ -1,0 +1,15 @@
+DATE: 04/27/26
+
+Updates:
+- Separated the files
+- Expanded the blueprint background
+
+To Update:
+- Conditional Blocks
+  - Rename
+  - Add new operators for conditions
+  - Add a then block
+  - Fix the logic and structure
+- Logo
+- Sound effects
+- OOP

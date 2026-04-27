@@ -31,6 +31,8 @@ console_output   = ["Blueprint ready!", "Drag blocks from the left to start buil
 detailed_phases  = {}
 dragging_separator    = False
 separator_mouse_offset= 0
+panning               = False
+pan_last_pos          = (0, 0)
 
 recalculate_ui_positions()
 
@@ -92,7 +94,8 @@ while running:
     screen.set_clip(pygame.Rect(WORKSPACE_LEFT, shared.workspace_top,
                                 shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, ws_height))
     dot_oy = int(shared.workspace_scroll_offset) % 20
-    for gx in range(WORKSPACE_LEFT + 10, shared.WIDTH - WORKSPACE_RIGHT_MARGIN, 20):
+    dot_ox = int(shared.workspace_scroll_offset_x) % 20
+    for gx in range(WORKSPACE_LEFT + (20 - dot_ox) % 20, shared.WIDTH - WORKSPACE_RIGHT_MARGIN, 20):
         for gy in range(shared.workspace_top + (20 - dot_oy) % 20, shared.workspace_bottom, 20):
             pygame.draw.circle(screen, GRID_DOT_COLOR, (gx, gy), 1)
     screen.set_clip(None)
@@ -190,7 +193,7 @@ while running:
             for b in sidebar_blocks:
                 if b.rect.collidepoint(mx, my):
                     nb = Block(b.text, b.color, b.category,
-                               int(mx / shared.zoom_scale),
+                               int((mx + shared.workspace_scroll_offset_x) / shared.zoom_scale),
                                int((my + shared.workspace_scroll_offset) / shared.zoom_scale))
                     nb.dragging = True
                     shared.dragging_block = nb
@@ -257,7 +260,18 @@ while running:
                 elif shared.run_rect.collidepoint(mx, my):
                     console_output, detailed_phases = evaluate_compiler_logic(shared.placed_blocks)
 
+                if (shared.dragging_block is None and
+                        mx > WORKSPACE_LEFT and
+                        shared.workspace_top < my < shared.workspace_bottom):
+                    panning = True
+                    pan_last_pos = (mx, my)
+                    pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_SIZEALL)
+
         elif event.type == pygame.MOUSEBUTTONUP:
+            if panning:
+                panning = False
+                pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
             if dragging_separator:
                 dragging_separator = False
                 clamp_all_blocks_to_workspace()
@@ -374,6 +388,13 @@ while running:
                     shared.dynamic_console_height = new_h
                     recalculate_ui_positions()
 
+            if panning:
+                dx = event.pos[0] - pan_last_pos[0]
+                dy = event.pos[1] - pan_last_pos[1]
+                pan_last_pos = event.pos
+                shared.workspace_scroll_offset_x = max(0, shared.workspace_scroll_offset_x - dx)
+                shared.workspace_scroll_offset    = max(0, shared.workspace_scroll_offset    - dy)
+
             if shared.dragging_block:
                 db = shared.dragging_block
                 if db.category == "Editable" and db.prev_block is not None:
@@ -382,8 +403,8 @@ while running:
                     if db.next_block:
                         db.next_block.prev_block = db.prev_block
                     db.prev_block = db.next_block = None
-                db.rect.x = int((event.pos[0] - shared.offset_x) / shared.zoom_scale)
-                db.rect.y = int((event.pos[1] + shared.workspace_scroll_offset - shared.offset_y) / shared.zoom_scale)
+                db.rect.x = int((event.pos[0] + shared.workspace_scroll_offset_x - shared.offset_x) / shared.zoom_scale)
+                db.rect.y = int((event.pos[1] + shared.workspace_scroll_offset    - shared.offset_y) / shared.zoom_scale)
 
         elif event.type == pygame.MOUSEWHEEL:
             mx, my = pygame.mouse.get_pos()

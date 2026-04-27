@@ -20,6 +20,7 @@ dynamic_console_height = CONSOLE_HEIGHT_FIXED
 # ---- Zoom & scroll ----
 zoom_scale = 1.0
 workspace_scroll_offset = 0
+workspace_scroll_offset_x = 0
 console_scroll_offset = 0
 
 # ---- Fonts (None until set by main after pygame.init()) ----
