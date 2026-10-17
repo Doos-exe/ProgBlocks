@@ -35,6 +35,42 @@ def get_block_view_rect(block):
     )
 
 
+def get_workspace_scroll_limits(blocks):
+    """Return the maximum horizontal and vertical canvas scroll offsets."""
+    # Keep a usable canvas even when the current program occupies only a
+    # small area. This lets middle/right-button dragging pan through empty
+    # blueprint space instead of clamping immediately to zero.
+    minimum_canvas_right = WORKSPACE_LEFT + 1600
+    minimum_canvas_bottom = shared.workspace_top + 1000
+    content_right = max(
+        (block.rect.right for block in blocks if not block.is_template),
+        default=minimum_canvas_right,
+    )
+    content_bottom = max(
+        (block.content_bottom() for block in blocks if not block.is_template),
+        default=minimum_canvas_bottom,
+    )
+    content_right = max(content_right, minimum_canvas_right)
+    content_bottom = max(content_bottom, minimum_canvas_bottom)
+    max_x = max(
+        0,
+        int(content_right * shared.zoom_scale
+            - (shared.WIDTH - WORKSPACE_RIGHT_MARGIN)),
+    )
+    max_y = max(
+        0,
+        int(content_bottom * shared.zoom_scale - shared.workspace_bottom),
+    )
+    return max_x, max_y
+
+
+def clamp_workspace_scroll(blocks):
+    """Keep the viewport valid without changing any block positions."""
+    max_x, max_y = get_workspace_scroll_limits(blocks)
+    shared.workspace_scroll_offset_x = min(max(0, shared.workspace_scroll_offset_x), max_x)
+    shared.workspace_scroll_offset = min(max(0, shared.workspace_scroll_offset), max_y)
+
+
 def clamp_block_chain_to_workspace(block):
     if block.prev_block is not None:
         return

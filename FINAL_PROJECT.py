@@ -7,7 +7,7 @@ from block import Block
 from compiler import evaluate_compiler_logic, reorganize_nesting
 from ui_helpers import (
     show_explainability_window, recalculate_ui_positions,
-    get_block_view_rect, clamp_all_blocks_to_workspace,
+    get_block_view_rect, get_workspace_scroll_limits, clamp_workspace_scroll,
     is_mouse_on_separator,
 )
 
@@ -27,12 +27,30 @@ sidebar_blocks = [
     for i, (t, c, cat) in enumerate(AVAILABLE_BLOCKS)
 ]
 
-console_output   = ["Blueprint ready!", "Drag blocks from the left to start building your program."]
+
+def can_enter_condition_slot(block):
+    """Return whether a block is valid inside an if/while/for condition."""
+    if block.text in CONDITION_OPERATORS:
+        return True
+    return (
+        block.category == "Editable"
+        and block.text not in KEYWORDS
+        and block.text not in OPERATORS
+        and block.text not in SEPARATORS
+    )
+
+console_output   = [
+    "Blueprint ready!",
+    "Drag palette blocks to create copies. Middle/right-drag or scroll to pan.",
+]
 detailed_phases  = {}
 dragging_separator    = False
 separator_mouse_offset= 0
 panning               = False
+panning_button        = None
 pan_last_pos          = (0, 0)
+drag_candidate        = None
+drag_candidate_pos    = (0, 0)
 
 recalculate_ui_positions()
 
@@ -67,9 +85,11 @@ while running:
         (shared.clear_rect, "CLEAR", CLEAR_BTN_COLOR),
         (shared.run_rect,   "RUN",   RUN_BTN_COLOR),
     ]:
-        dark = (max(0, color[0] - 110), max(0, color[1] - 110), max(0, color[2] - 110))
+        hovered = rect.collidepoint(pygame.mouse.get_pos())
+        shade = 80 if hovered else 110
+        dark = (max(0, color[0] - shade), max(0, color[1] - shade), max(0, color[2] - shade))
         pygame.draw.rect(screen, dark,  rect, border_radius=4)
-        pygame.draw.rect(screen, color, rect, 1, border_radius=4)
+        pygame.draw.rect(screen, WHITE if hovered else color, rect, 1, border_radius=4)
         txt = shared.font_small.render(label, True, color)
         screen.blit(txt, (rect.centerx - txt.get_width()//2, rect.centery - txt.get_height()//2))
 
@@ -130,7 +150,9 @@ while running:
     ws_clip = pygame.Rect(WORKSPACE_LEFT, shared.workspace_top,
                           shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN, ws_height)
     screen.set_clip(ws_clip)
-    for b in shared.placed_blocks:
+    # Draw conditional outlines first so body/condition blocks remain legible
+    # even when the user created them before placing the conditional block.
+    for b in sorted(shared.placed_blocks, key=lambda item: item.category != "Conditional"):
         dr = get_block_view_rect(b)
         if dr.y + dr.height <= shared.workspace_bottom:
             orig = b.rect
@@ -179,10 +201,34 @@ while running:
             shared.HEIGHT = max(event.size[1], MINIMUM_HEIGHT)
             screen = pygame.display.set_mode((shared.WIDTH, shared.HEIGHT), pygame.RESIZABLE)
             recalculate_ui_positions()
-            clamp_all_blocks_to_workspace()
+            # The viewport changes; the persistent blueprint coordinates do
+            # not. Only adjust the scroll position if the new viewport is
+            # smaller than the current canvas bounds.
+            clamp_workspace_scroll(shared.placed_blocks)
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mx, my = event.pos
+
+            if event.button in (2, 3):
+                if (WORKSPACE_LEFT < mx < shared.WIDTH - WORKSPACE_RIGHT_MARGIN and
+                        shared.workspace_top < my < shared.workspace_bottom):
+                    panning = True
+                    panning_button = event.button
+                    pan_last_pos = (mx, my)
+                    pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_SIZEALL)
+                continue
+
+            if event.button != 1:
+                continue
+
+            # Clicking elsewhere commits the current edit. This prevents a
+            # hidden caret state from surviving while the user rearranges the
+            # blueprint or presses a toolbar button.
+            if shared.editing_block:
+                shared.editing_block.is_editing = False
+                shared.editing_block.update_size()
+                shared.editing_block = None
+            drag_candidate = None
 
             if is_mouse_on_separator(my):
                 dragging_separator = True
@@ -207,28 +253,25 @@ while running:
                 for b in reversed(shared.placed_blocks):
                     vr = get_block_view_rect(b)
                     if vr.collidepoint(mx, my):
-                        if b.category == "Editable":
-                            if shared.editing_block and shared.editing_block != b:
-                                shared.editing_block.is_editing = False
-                            b.is_editing = True
-                            shared.editing_block = b
-                            b.dragging = True
-                            shared.dragging_block = b
-                            shared.offset_x = mx - vr.x
-                            shared.offset_y = my - vr.y
-                            break
-
-                        if b.in_condition_of is not None:
+                        # Condition-slot blocks must be detachable before the
+                        # editable-block branch handles their text input.
+                        if b.in_condition_of is not None and b.category != "Editable":
                             parent = b.in_condition_of
                             if b in parent.condition_blocks:
                                 parent.condition_blocks.remove(b)
                             b.in_condition_of = None
                             parent.update_size()
                             parent.update_position(parent.rect.x, parent.rect.y)
-                            b.dragging = True
-                            shared.dragging_block = b
-                            shared.offset_x = mx - vr.x
-                            shared.offset_y = my - vr.y
+
+                        if b.category == "Editable":
+                            b.is_editing = True
+                            b.edit_original_text = b.text
+                            shared.editing_block = b
+                            # A click edits. Moving beyond the threshold in
+                            # MOUSEMOTION turns the same interaction into a
+                            # drag, preventing typing from moving the block.
+                            drag_candidate = b
+                            drag_candidate_pos = (mx, my)
                             break
 
                         if b.prev_block:
@@ -250,47 +293,98 @@ while running:
                 elif shared.info_rect.collidepoint(mx, my):
                     if detailed_phases:
                         show_explainability_window(detailed_phases)
+                        screen = pygame.display.get_surface()
+                    else:
+                        console_output = [
+                            "Run a program first to view compiler analysis."
+                        ]
                 elif shared.clear_rect.collidepoint(mx, my):
                     shared.placed_blocks.clear()
                     console_output = ["Workspace cleared."]
+                    shared.console_scroll_offset = 0
+                    shared.workspace_scroll_offset = 0
+                    shared.workspace_scroll_offset_x = 0
                     detailed_phases = {}
                     if shared.editing_block:
                         shared.editing_block.is_editing = False
                         shared.editing_block = None
                 elif shared.run_rect.collidepoint(mx, my):
                     console_output, detailed_phases = evaluate_compiler_logic(shared.placed_blocks)
-
-                if (shared.dragging_block is None and
-                        mx > WORKSPACE_LEFT and
-                        shared.workspace_top < my < shared.workspace_bottom):
-                    panning = True
-                    pan_last_pos = (mx, my)
-                    pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_SIZEALL)
+                    shared.console_scroll_offset = 0
 
         elif event.type == pygame.MOUSEBUTTONUP:
-            if panning:
+            if panning and event.button == panning_button:
                 panning = False
+                panning_button = None
                 pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
 
             if dragging_separator:
                 dragging_separator = False
-                clamp_all_blocks_to_workspace()
+                clamp_workspace_scroll(shared.placed_blocks)
 
-            if shared.dragging_block:
+            if event.button == 1 and shared.dragging_block:
                 db = shared.dragging_block
                 db.dragging = False
                 db.update_size()
+                # Apply the release position as well as the last motion
+                # event; this makes edge-of-blueprint deletion deterministic.
+                db.rect.x = int(
+                    (event.pos[0] + shared.workspace_scroll_offset_x - shared.offset_x)
+                    / shared.zoom_scale
+                )
+                db.rect.y = int(
+                    (event.pos[1] + shared.workspace_scroll_offset - shared.offset_y)
+                    / shared.zoom_scale
+                )
 
-                # Condition-slot snap
-                snapped = False
-                if db.category != "Conditional":
-                    for cond in shared.placed_blocks:
-                        if cond.category == "Conditional" and cond != db:
+                def _remove_db():
+                    if db.in_condition_of is not None:
+                        parent = db.in_condition_of
+                        if db in parent.condition_blocks:
+                            parent.condition_blocks.remove(db)
+                        db.in_condition_of = None
+                        parent.update_size()
+                    if db.category == "Conditional":
+                        for cb in db.condition_blocks:
+                            cb.in_condition_of = None
+                            if cb in shared.placed_blocks:
+                                shared.placed_blocks.remove(cb)
+                        db.condition_blocks.clear()
+                    if db.prev_block:
+                        db.prev_block.next_block = db.next_block
+                    if db.next_block:
+                        db.next_block.prev_block = db.prev_block
+                    db.prev_block = db.next_block = None
+                    if db in shared.placed_blocks:
+                        shared.placed_blocks.remove(db)
+
+                # Removal is based on the rendered rectangle, so it remains
+                # correct while zooming or panning. A block must be fully
+                # inside the blueprint when the mouse is released.
+                workspace_rect = pygame.Rect(
+                    WORKSPACE_LEFT,
+                    shared.workspace_top,
+                    shared.WIDTH - WORKSPACE_LEFT - WORKSPACE_RIGHT_MARGIN,
+                    shared.workspace_bottom - shared.workspace_top,
+                )
+                db_view = get_block_view_rect(db)
+                dropped_outside = not workspace_rect.contains(db_view)
+
+                if not dropped_outside:
+                    # Condition-slot snap. This is intentionally checked
+                    # before ordinary connections because the slot is the
+                    # only valid horizontal target for a conditional header.
+                    snapped = False
+                    if db.category != "Conditional" and can_enter_condition_slot(db):
+                        for cond in shared.placed_blocks:
+                            if cond.category != "Conditional" or cond == db:
+                                continue
                             cv = get_block_view_rect(cond)
                             slot_x = cv.x + int(cond.keyword_part_width * shared.zoom_scale)
-                            slot_rect = pygame.Rect(slot_x, cv.y, cv.right - slot_x, cv.height)
-                            dv = get_block_view_rect(db)
-                            if slot_rect.collidepoint(dv.centerx, dv.centery):
+                            slot_rect = pygame.Rect(
+                                slot_x, cv.y, max(0, cv.right - slot_x), cv.height
+                            )
+                            if slot_rect.collidepoint(db_view.centerx, db_view.centery):
                                 if db.prev_block:
                                     db.prev_block.next_block = db.next_block
                                 if db.next_block:
@@ -307,76 +401,77 @@ while running:
                                 snapped = True
                                 break
 
-                if not snapped:
-                    for other in shared.placed_blocks:
-                        if other != db and other.next_block is None:
-                            if other.rect.y >= shared.workspace_top and other.rect.y < shared.workspace_bottom:
-                                # Vertical connection
-                                if (abs(db.rect.top - other.rect.bottom) < 20 and
-                                        abs(db.rect.centerx - other.rect.centerx) < 20):
-                                    ny = other.rect.bottom + 2
-                                    if shared.workspace_top <= ny and ny + db.rect.height <= shared.workspace_bottom:
-                                        other.next_block = db
-                                        other.connection_direction = "vertical"
-                                        db.prev_block = other
-                                        db.update_position(other.rect.x, ny)
-                                        break
-                                # Horizontal connection
-                                elif (abs(db.rect.left - other.rect.right) < 20 and
-                                      abs(db.rect.centery - other.rect.centery) < 20):
-                                    nx = other.rect.right + 2
-                                    ny = other.rect.y
-                                    if (nx >= WORKSPACE_LEFT and
-                                            nx + db.rect.width <= shared.WIDTH - WORKSPACE_RIGHT_MARGIN and
-                                            shared.workspace_top <= ny < shared.workspace_bottom):
-                                        if other.category == "Conditional":
-                                            cp = other
-                                        elif other.in_condition_of is not None:
-                                            cp = other.in_condition_of
-                                        else:
-                                            cp = None
-                                        if cp is not None:
-                                            db.in_condition_of = cp
-                                            if db not in cp.condition_blocks:
-                                                cp.condition_blocks.append(db)
-                                            if db in shared.placed_blocks:
-                                                shared.placed_blocks.remove(db)
-                                                shared.placed_blocks.append(db)
-                                            cp.update_size()
-                                            cp.update_position(cp.rect.x, cp.rect.y)
-                                        else:
-                                            other.next_block = db
-                                            other.connection_direction = "horizontal"
-                                            db.prev_block = other
-                                            db.update_position(nx, ny)
-                                        break
+                    if not snapped:
+                        # Collect both orientations first. Prefer the
+                        # horizontal candidate when the user is placing a
+                        # block to the right; the previous first-match loop
+                        # could incorrectly choose a block's bottom edge.
+                        horizontal = []
+                        vertical = []
+                        for other in shared.placed_blocks:
+                            if other == db or other.next_block is not None:
+                                continue
+                            other_view = get_block_view_rect(other)
+                            horizontal_gap = abs(db_view.left - other_view.right)
+                            horizontal_alignment = abs(db_view.centery - other_view.centery)
+                            vertical_gap = abs(db_view.top - other_view.bottom)
+                            vertical_alignment = abs(db_view.centerx - other_view.centerx)
+                            if horizontal_gap <= 18 and horizontal_alignment <= 18:
+                                horizontal.append((horizontal_gap + horizontal_alignment, other))
+                            if vertical_gap <= 18 and vertical_alignment <= 18:
+                                vertical.append((vertical_gap + vertical_alignment, other))
 
-                def _remove_db():
-                    if db.category == "Conditional":
-                        for cb in db.condition_blocks:
-                            cb.in_condition_of = None
-                            if cb in shared.placed_blocks:
-                                shared.placed_blocks.remove(cb)
-                        db.condition_blocks.clear()
-                    if db.prev_block:
-                        db.prev_block.next_block = db.next_block
-                    if db.next_block:
-                        db.next_block.prev_block = db.prev_block
-                    db.prev_block = db.next_block = None
-                    if db in shared.placed_blocks:
-                        shared.placed_blocks.remove(db)
+                        target = None
+                        direction = None
+                        if horizontal:
+                            _, target = min(horizontal, key=lambda item: item[0])
+                            direction = "horizontal"
+                        elif vertical:
+                            _, target = min(vertical, key=lambda item: item[0])
+                            direction = "vertical"
 
-                if db.rect.right < WORKSPACE_LEFT and db not in sidebar_blocks:
-                    _remove_db()
-                if db in shared.placed_blocks and db.rect.bottom < shared.workspace_top:
-                    _remove_db()
-                if db in shared.placed_blocks and db.rect.x > shared.WIDTH - WORKSPACE_RIGHT_MARGIN:
-                    _remove_db()
-                if db in shared.placed_blocks and db.rect.y > shared.workspace_bottom:
+                        if target is not None:
+                            if direction == "horizontal":
+                                nx = target.rect.right + 2
+                                ny = target.rect.y
+                                if target.category == "Conditional" and can_enter_condition_slot(db):
+                                    parent = target
+                                elif target.in_condition_of is not None and can_enter_condition_slot(db):
+                                    parent = target.in_condition_of
+                                else:
+                                    parent = None
+                                if parent is not None:
+                                    db.in_condition_of = parent
+                                    if db not in parent.condition_blocks:
+                                        parent.condition_blocks.append(db)
+                                    if db in shared.placed_blocks:
+                                        shared.placed_blocks.remove(db)
+                                        shared.placed_blocks.append(db)
+                                    parent.update_size()
+                                    parent.update_position(parent.rect.x, parent.rect.y)
+                                else:
+                                    target.next_block = db
+                                    target.connection_direction = "horizontal"
+                                    db.prev_block = target
+                                    db.update_position(nx, ny)
+                            else:
+                                ny = target.rect.bottom + 2
+                                target.next_block = db
+                                target.connection_direction = "vertical"
+                                db.prev_block = target
+                                db.update_position(target.rect.x, ny)
+
+                if dropped_outside:
                     _remove_db()
 
                 reorganize_nesting(shared.placed_blocks)
                 shared.dragging_block = None
+                drag_candidate = None
+            elif event.button == 1 and drag_candidate is not None:
+                # A click is an edit action. Only MOUSEMOTION beyond the
+                # drag threshold turns it into a move, so releasing here must
+                # leave the caret active for keyboard input.
+                drag_candidate = None
 
         elif event.type == pygame.MOUSEMOTION:
             if dragging_separator:
@@ -392,8 +487,28 @@ while running:
                 dx = event.pos[0] - pan_last_pos[0]
                 dy = event.pos[1] - pan_last_pos[1]
                 pan_last_pos = event.pos
-                shared.workspace_scroll_offset_x = max(0, shared.workspace_scroll_offset_x - dx)
-                shared.workspace_scroll_offset    = max(0, shared.workspace_scroll_offset    - dy)
+                max_x, max_y = get_workspace_scroll_limits(shared.placed_blocks)
+                shared.workspace_scroll_offset_x = min(
+                    max_x, max(0, shared.workspace_scroll_offset_x - dx)
+                )
+                shared.workspace_scroll_offset = min(
+                    max_y, max(0, shared.workspace_scroll_offset - dy)
+                )
+
+            if drag_candidate is not None and shared.dragging_block is None:
+                dx = event.pos[0] - drag_candidate_pos[0]
+                dy = event.pos[1] - drag_candidate_pos[1]
+                if dx * dx + dy * dy >= 16:
+                    db = drag_candidate
+                    db.is_editing = False
+                    if shared.editing_block is db:
+                        shared.editing_block = None
+                    vr = get_block_view_rect(db)
+                    shared.offset_x = event.pos[0] - vr.x
+                    shared.offset_y = event.pos[1] - vr.y
+                    db.dragging = True
+                    shared.dragging_block = db
+                    drag_candidate = None
 
             if shared.dragging_block:
                 db = shared.dragging_block
@@ -403,6 +518,13 @@ while running:
                     if db.next_block:
                         db.next_block.prev_block = db.prev_block
                     db.prev_block = db.next_block = None
+                elif db.category == "Editable" and db.in_condition_of is not None:
+                    parent = db.in_condition_of
+                    if db in parent.condition_blocks:
+                        parent.condition_blocks.remove(db)
+                    db.in_condition_of = None
+                    parent.update_size()
+                    parent.update_position(parent.rect.x, parent.rect.y)
                 db.rect.x = int((event.pos[0] + shared.workspace_scroll_offset_x - shared.offset_x) / shared.zoom_scale)
                 db.rect.y = int((event.pos[1] + shared.workspace_scroll_offset    - shared.offset_y) / shared.zoom_scale)
 
@@ -420,32 +542,69 @@ while running:
                 elif event.y < 0:
                     max_cs = max(0, (len(console_output) - 7) * 17)
                     shared.console_scroll_offset = min(shared.console_scroll_offset + 30, max_cs)
+            elif WORKSPACE_LEFT < mx < shared.WIDTH - WORKSPACE_RIGHT_MARGIN and \
+                    shared.workspace_top < my < shared.workspace_bottom:
+                if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                    shared.workspace_scroll_offset_x = max(
+                        0, shared.workspace_scroll_offset_x - event.y * 30
+                    )
+                else:
+                    _, max_workspace_scroll = get_workspace_scroll_limits(
+                        shared.placed_blocks
+                    )
+                    if event.y > 0:
+                        shared.workspace_scroll_offset = max(
+                            0, shared.workspace_scroll_offset - 30
+                        )
+                    elif event.y < 0:
+                        shared.workspace_scroll_offset = min(
+                            max_workspace_scroll,
+                            shared.workspace_scroll_offset + 30,
+                        )
 
         elif event.type == pygame.KEYDOWN:
             if shared.editing_block:
+                edited = shared.editing_block
                 if event.key == pygame.K_BACKSPACE:
-                    if shared.editing_block.text:
-                        shared.editing_block.text = shared.editing_block.text[:-1]
-                    shared.editing_block.update_size()
-                elif event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
-                    shared.editing_block.is_editing = False
-                    shared.editing_block.update_size()
+                    if edited.text:
+                        edited.text = edited.text[:-1]
+                elif event.key == pygame.K_ESCAPE:
+                    edited.text = edited.edit_original_text
+                    edited.is_editing = False
+                    shared.editing_block = None
+                elif event.key == pygame.K_RETURN:
+                    edited.is_editing = False
                     shared.editing_block = None
                 else:
                     try:
-                        shared.editing_block.text += event.unicode
-                        shared.editing_block.update_size()
+                        if event.unicode and event.unicode.isprintable():
+                            edited.text += event.unicode
                     except Exception:
                         pass
 
-            if event.key == pygame.K_UP:
+                edited.update_size()
+                if edited.in_condition_of:
+                    # Changing the text changes only the condition row. Do
+                    # not reflow the conditional body, which can otherwise
+                    # make existing body blocks jump downward while typing.
+                    edited.in_condition_of.update_condition_layout()
+                elif edited.next_block and edited.connection_direction == "horizontal":
+                    edited.next_block.update_position(edited.rect.right + 2, edited.rect.y)
+
+            if shared.editing_block is None and event.key == pygame.K_UP:
                 shared.workspace_scroll_offset = max(0, shared.workspace_scroll_offset - 30)
-            elif event.key == pygame.K_DOWN:
-                max_s = max(0, max((b.rect.bottom for b in shared.placed_blocks), default=0) - 500)
+            elif shared.editing_block is None and event.key == pygame.K_DOWN:
+                max_s = max(
+                    0,
+                    int(max(
+                        (b.content_bottom() for b in shared.placed_blocks),
+                        default=shared.workspace_bottom,
+                    ) * shared.zoom_scale - shared.workspace_bottom),
+                )
                 shared.workspace_scroll_offset = min(shared.workspace_scroll_offset + 30, max_s)
-            elif event.key == pygame.K_PAGEUP:
+            elif shared.editing_block is None and event.key == pygame.K_PAGEUP:
                 shared.console_scroll_offset = max(0, shared.console_scroll_offset - 50)
-            elif event.key == pygame.K_PAGEDOWN:
+            elif shared.editing_block is None and event.key == pygame.K_PAGEDOWN:
                 max_cs = max(0, (len(console_output) - 9) * 17)
                 shared.console_scroll_offset = min(shared.console_scroll_offset + 50, max_cs)
 

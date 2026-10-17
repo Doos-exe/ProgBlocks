@@ -1,737 +1,815 @@
+"""Lexing, parsing, semantic analysis, and execution for ProgBlocks.
+
+The editor stores a program as linked blocks. This module turns that block
+tree into tokens, parses the tokens into statements, and then executes the
+statements. Keeping parsing separate from execution prevents malformed block
+arrangements from causing an IndexError or a partially executed program.
+"""
+
+import ast
+import re
+
 import shared
-from constants import KEYWORDS, OPERATORS, SEPARATORS, WORKSPACE_LEFT, WORKSPACE_RIGHT_MARGIN
+from constants import (
+    KEYWORDS,
+    OPERATORS,
+    SEPARATORS,
+    WORKSPACE_LEFT,
+    WORKSPACE_RIGHT_MARGIN,
+)
 
 
-# ---- Token validators ----
+CONDITIONALS = {"if", "while", "for"}
+CONDITIONAL_ENDS = {f"{name}_end" for name in CONDITIONALS}
+DECLARATION_TYPES = {"digit", "word", "bet"}
+ARITHMETIC_OPERATORS = {"adds", "minus", "mul", "div"}
+COMPARISON_OPERATORS = {"==", "!=", "<", ">", "<=", ">="}
+
+
+# ---- Token validators ----------------------------------------------------
 
 def is_valid_identifier(name):
+    """Return whether *name* is a legal user-defined identifier."""
     try:
-        if not name:
+        if not isinstance(name, str) or not name:
             return False
-        if not (name[0].isalpha() or name[0] == '_'):
+        if not (name[0].isalpha() or name[0] == "_"):
             return False
-        if name in KEYWORDS:
+        if name in KEYWORDS or name in OPERATORS or name in SEPARATORS:
             return False
-        return all(c.isalnum() or c == '_' for c in name)
-    except Exception:
+        return all(char.isalnum() or char == "_" for char in name)
+    except (TypeError, IndexError):
         return False
 
 
 def get_literal_type(literal):
-    try:
-        stripped = literal.strip('"\'')
-        if stripped.lower() in ('real', 'fake'):
-            return 'bet'
-        if stripped.isdigit():
-            return 'digit'
-        if (literal.startswith('"') and literal.endswith('"') and len(literal) >= 2) or \
-           (literal.startswith("'") and literal.endswith("'") and len(literal) >= 2):
-            return 'word'
-    except Exception:
-        pass
+    """Return ``digit``, ``word``, or ``bet`` for a literal token.
+
+    Boolean words are deliberately checked only when unquoted. In the old
+    implementation ``"real"`` was treated as a boolean instead of a string.
+    """
+    if not isinstance(literal, str):
+        return None
+    token = literal.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return "word"
+    if token.lower() in {"real", "fake", "true", "false"}:
+        return "bet"
+    if re.fullmatch(r"[+-]?\d+", token):
+        return "digit"
+    if re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+)", token):
+        return "digit"
     return None
 
 
 def is_valid_token(token):
-    if token in KEYWORDS or token in OPERATORS or token in SEPARATORS:
-        return True
-    if get_literal_type(token):
-        return True
-    if is_valid_identifier(token):
-        return True
-    return False
+    return (
+        token in KEYWORDS
+        or token in OPERATORS
+        or token in SEPARATORS
+        or get_literal_type(token) is not None
+        or is_valid_identifier(token)
+    )
 
-
-# ---- Lexical analysis ----
 
 def lexical_analysis(tokens):
     errors = []
-    for i, token in enumerate(tokens):
+    for position, token in enumerate(tokens, start=1):
         if not is_valid_token(token):
-            if get_literal_type(token) is None and not is_valid_identifier(token):
-                errors.append(f"Lexical Error [{i+1}]: Variable '{token}' not found")
-            else:
-                errors.append(f"Lexical Error [{i+1}]: Invalid token '{token}'")
+            errors.append(f"Lexical Error [{position}]: Invalid token '{token}'")
     return errors
 
 
-# ---- Recovery strategies ----
+# ---- Recovery guidance ---------------------------------------------------
 
-def get_recovery_strategies(error_type, error_details):
+def get_recovery_strategies(error_type, error_details=""):
     strategies = {
         "lexical_invalid_token": [
             "RECOVERY STRATEGIES:",
             "1. Check token spelling and capitalization",
-            "2. Use valid keywords: digit, word, bet, out, end, :, adds, minus, mul, div",
-            "3. Variable names must start with letter or underscore",
-            "4. Numbers must be wrapped in quotes for string/word types",
-            "5. Strings must use double quotes: \"hello\"",
-            "6. Booleans must be: true or false",
+            "2. Use valid keywords and operators from the palette",
+            "3. Identifiers must start with a letter or underscore",
+            "4. Strings must be enclosed in single or double quotes",
+            "5. Boolean values are real/fake (true/false are also accepted)",
         ],
         "syntax_missing_end": [
             "RECOVERY STRATEGIES:",
-            "1. Every program must end with 'end' block",
-            "2. Block structure: TYPE NAME : VALUE end",
-            "3. Output structure: out VALUE end",
-            "4. Add missing 'end' terminator at the conclusion",
-            "5. Chain blocks together: drag and connect visually",
+            "1. Use TYPE NAME : VALUE end for declarations",
+            "2. Use out VALUE end for output",
+            "3. Conditional bodies close with if_end, while_end, or for_end",
+            "4. Check that blocks are connected in the intended order",
         ],
         "syntax_invalid_start": [
             "RECOVERY STRATEGIES:",
-            "1. Programs must start with: digit, word, bet, or out",
-            "2. digit = numeric variable declaration",
-            "3. word = string variable declaration",
-            "4. bet = boolean variable declaration",
-            "5. out = output/print statement",
-            "6. Start with a declaration or output block",
+            "1. Programs start with digit, word, bet, out, if, while, or for",
+            "2. A declaration needs a name, a colon, a value, and end",
+            "3. A conditional needs a condition and a body",
         ],
         "semantic_type_mismatch": [
             "RECOVERY STRATEGIES:",
-            "1. Match value type to declared type",
-            "2. digit expects numbers: 42, 3, 100",
-            "3. word expects quoted strings: \"hello\", \"world\"",
-            "4. bet expects boolean: true or false",
-            "5. Check quotes around string values",
-            "6. Numbers don't need quotes for digit type",
+            "1. digit values and arithmetic operands must be numeric",
+            "2. word values must be quoted strings",
+            "3. bet values must be real/fake or a comparison result",
+            "4. adds needs matching digit or word types",
+            "5. minus and div work only with digits",
+            "6. A word can be multiplied by a digit repeat count",
         ],
         "semantic_undefined_identifier": [
             "RECOVERY STRATEGIES:",
-            "1. Declare variable before using in output",
+            "1. Declare a variable before using it",
             "2. Variable names are case-sensitive",
-            "3. Check spelling of variable names",
-            "4. Declare with: digit, word, or bet first",
-            "5. Use full declaration: TYPE NAME : VALUE end",
-            "6. Then output with: out VARNAME end",
+            "3. Check the spelling of the identifier",
         ],
         "semantic_invalid_declaration": [
             "RECOVERY STRATEGIES:",
-            "1. Declaration format: TYPE NAME : VALUE end",
-            "2. Replace TYPE with: digit, word, or bet",
-            "3. NAME must be valid identifier",
-            "4. VALUE must match the TYPE",
-            "5. : and end are required separators",
-            "6. Example: digit count : 5 end",
+            "1. Declaration format: TYPE NAME : VALUE [OP VALUE] end",
+            "2. Use a unique identifier that is not a keyword",
+            "3. Use := with two values for a bet comparison",
+        ],
+        "semantic_invalid_condition": [
+            "RECOVERY STRATEGIES:",
+            "1. if/while accepts a bet variable or VALUE COMPARISON VALUE",
+            "2. Comparison operators are ==, !=, <, >, <=, and >=",
+            "3. for accepts one non-negative digit count",
+            "4. Add at least one statement inside the conditional body",
         ],
     }
     return strategies.get(error_type, ["No recovery strategies available for this error"])
 
 
-# ---- Nesting helpers ----
+# ---- Conditional layout --------------------------------------------------
+
+def _conditional_body_bounds(conditional_block):
+    """Return a forgiving but finite drop area for a conditional body."""
+    body_top = conditional_block.rect.bottom + 5
+    known_height = sum(
+        max(35, body.rect.height) + 2 for body in conditional_block.body_blocks
+    )
+    body_bottom = min(
+        shared.workspace_bottom,
+        body_top + max(220, known_height + 120),
+    )
+    body_left = conditional_block.rect.x + 12
+    body_right = conditional_block.rect.x + max(
+        conditional_block.rect.width + 180, 500
+    )
+    return body_left, body_top, body_right, body_bottom
+
 
 def is_block_inside_conditional(block, conditional_block):
-    if conditional_block.category != "Conditional":
+    if conditional_block.category != "Conditional" or block is conditional_block:
         return False
-    if conditional_block.body_blocks:
-        body_height = sum(b.rect.height + 2 for b in conditional_block.body_blocks) + 20
-        total_height = conditional_block.rect.height + body_height
-    else:
-        total_height = conditional_block.rect.height + 40
-    total_height_with_buffer = total_height + 100
-    body_left   = conditional_block.rect.x + 10
-    body_top    = conditional_block.rect.y + conditional_block.rect.height + 5
-    body_bottom = conditional_block.rect.y + total_height_with_buffer
-    return (block.rect.centerx >= body_left and
-            body_top <= block.rect.centery <= body_bottom)
+    if block.in_condition_of is not None:
+        return False
+    left, top, right, bottom = _conditional_body_bounds(conditional_block)
+    return (
+        left <= block.rect.centerx <= right
+        and top <= block.rect.centery <= bottom
+    )
+
+
+def _parent_candidate(block, conditionals):
+    candidates = [
+        conditional
+        for conditional in conditionals
+        if is_block_inside_conditional(block, conditional)
+    ]
+    if not candidates:
+        return None
+    # The lower/innermost conditional wins when nested conditionals overlap.
+    return max(candidates, key=lambda item: (item.rect.y, item.rect.x))
 
 
 def reorganize_nesting(placed_blocks):
+    """Rebuild conditional parent/body relationships after a block move."""
+    conditionals = [b for b in placed_blocks if b.category == "Conditional"]
+
     for block in placed_blocks:
         block.parent_conditional = None
-    for cond in placed_blocks:
-        if cond.category == "Conditional":
-            cond.body_blocks.clear()
+    for conditional in conditionals:
+        conditional.body_blocks.clear()
 
+    # Include conditional blocks so nested if/while/for blocks work.
     for block in placed_blocks:
-        if block.category == "Conditional" or block.in_condition_of is not None:
-            continue
-        for cond in placed_blocks:
-            if cond.category == "Conditional" and cond != block:
-                if is_block_inside_conditional(block, cond):
-                    block.parent_conditional = cond
-                    break
+        if block.in_condition_of is None:
+            block.parent_conditional = _parent_candidate(block, conditionals)
 
+    # A chain cannot cross a conditional boundary. Disconnect both sides;
+    # otherwise a body could be compiled once as a body and once at top level.
     for block in placed_blocks:
-        if block.in_condition_of is not None:
+        parent = block.parent_conditional
+        if parent is None or block.in_condition_of is not None:
             continue
-        if block.parent_conditional is not None:
-            if (block.prev_block is not None and
-                    block.prev_block.parent_conditional != block.parent_conditional):
-                block.prev_block.next_block = None
-                block.prev_block = None
+        if block.prev_block is not None and block.prev_block.parent_conditional is not parent:
+            block.prev_block.next_block = None
+            block.prev_block = None
+        if block.next_block is not None and block.next_block.parent_conditional is not parent:
+            block.next_block.prev_block = None
+            block.next_block = None
 
+    # Store only chain heads in body_blocks. update_position() lays out the
+    # remainder of each chain recursively.
     for block in placed_blocks:
-        if block.in_condition_of is not None:
+        parent = block.parent_conditional
+        if parent is None or block.in_condition_of is not None:
             continue
-        if block.parent_conditional is not None:
-            cond = block.parent_conditional
-            if block.prev_block is None or block.prev_block.parent_conditional != cond:
-                if block not in cond.body_blocks:
-                    cond.body_blocks.append(block)
+        if block.prev_block is None or block.prev_block.parent_conditional is not parent:
+            parent.body_blocks.append(block)
 
-    for cond in placed_blocks:
-        if cond.category == "Conditional":
-            cond.update_position(cond.rect.x, cond.rect.y)
+    for conditional in conditionals:
+        conditional.body_blocks.sort(key=lambda item: (item.rect.y, item.rect.x))
+        conditional.update_position(conditional.rect.x, conditional.rect.y)
 
 
-# ---- Token extraction ----
+# ---- Token extraction ----------------------------------------------------
 
 def extract_tokens_with_nesting(blocks):
+    """Flatten the block hierarchy while adding explicit conditional closers."""
     tokens = []
+    visited = set()
 
-    def traverse_block(block):
-        if block.is_template or block.in_condition_of is not None:
+    def traverse(block):
+        if block is None or block.is_template or block.in_condition_of is not None:
             return
-        if block in [b for cond in blocks
-                     if cond.category == "Conditional"
-                     for b in cond.body_blocks
-                     if cond.parent_conditional]:
+        if id(block) in visited:
             return
+        visited.add(id(block))
         tokens.append(block.text.strip())
-        if block.category == "Conditional" and block.condition_blocks:
-            for cb in block.condition_blocks:
-                tokens.append(cb.text.strip())
-        if block.category == "Conditional" and block.body_blocks:
-            for body_block in block.body_blocks:
-                traverse_block(body_block)
-            tokens.append(block.text + "_end")
-        if block.next_block:
-            traverse_block(block.next_block)
 
-    chain_starts = [
-        b for b in blocks
-        if b.prev_block is None
-        and b.parent_conditional is None
-        and b.in_condition_of is None
-        and not b.is_template
+        if block.category == "Conditional":
+            for condition_block in block.condition_blocks:
+                if not condition_block.is_template:
+                    tokens.append(condition_block.text.strip())
+            for body_block in sorted(
+                block.body_blocks, key=lambda item: (item.rect.y, item.rect.x)
+            ):
+                traverse(body_block)
+            tokens.append(f"{block.text.strip()}_end")
+
+        if block.next_block is not None:
+            traverse(block.next_block)
+
+    starts = [
+        block
+        for block in blocks
+        if not block.is_template
+        and block.prev_block is None
+        and block.parent_conditional is None
+        and block.in_condition_of is None
     ]
-    chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
-    for start in chain_starts:
-        traverse_block(start)
+    starts.sort(key=lambda item: (item.rect.y, item.rect.x))
+    for start in starts:
+        traverse(start)
     return tokens
 
 
-# ---- Main compiler entry point ----
+# ---- Parser --------------------------------------------------------------
+
+class ParseError(Exception):
+    def __init__(self, message, position):
+        super().__init__(message)
+        self.message = message
+        self.position = position
+
+
+def _expect(tokens, position, expected, description):
+    if position >= len(tokens) or tokens[position] != expected:
+        actual = "end of program" if position >= len(tokens) else f"'{tokens[position]}'"
+        raise ParseError(f"Expected {description}, got {actual}", position)
+    return position + 1
+
+
+def _parse_operand(tokens, position):
+    if position >= len(tokens):
+        raise ParseError("Expected a value, got end of program", position)
+    token = tokens[position]
+    if token in KEYWORDS or token in OPERATORS or token in SEPARATORS:
+        raise ParseError(f"Expected a value, got '{token}'", position)
+    if get_literal_type(token) is None and not is_valid_identifier(token):
+        raise ParseError(f"Invalid value '{token}'", position)
+    return token, position + 1
+
+
+def _parse_expression(tokens, position):
+    first, position = _parse_operand(tokens, position)
+    if position < len(tokens) and tokens[position] in ARITHMETIC_OPERATORS:
+        operator = tokens[position]
+        second, position = _parse_operand(tokens, position + 1)
+        return (first, operator, second), position
+    return (first, None, None), position
+
+
+def _parse_statement(tokens, position, closing=None):
+    if position >= len(tokens):
+        raise ParseError("Expected a statement, got end of program", position)
+    keyword = tokens[position]
+
+    if keyword in CONDITIONAL_ENDS:
+        raise ParseError(f"Unexpected '{keyword}'", position)
+
+    # Assignment: NAME : VALUE [OP VALUE] end
+    # This is intentionally separate from declarations so loop bodies can
+    # update an existing variable without redeclaring it.
+    if (
+        is_valid_identifier(keyword)
+        and position + 1 < len(tokens)
+        and tokens[position + 1] == ":"
+    ):
+        expression, next_pos = _parse_expression(tokens, position + 2)
+        next_pos = _expect(tokens, next_pos, "end", "'end'")
+        return {
+            "kind": "assignment",
+            "name": keyword,
+            "expression": expression,
+        }, next_pos
+
+    if keyword in DECLARATION_TYPES:
+        if keyword == "bet" and position + 2 < len(tokens) and tokens[position + 2] == ":=":
+            if position + 1 >= len(tokens) or not is_valid_identifier(tokens[position + 1]):
+                raise ParseError("bet requires a valid variable name", position + 1)
+            left, next_pos = _parse_operand(tokens, position + 3)
+            right, next_pos = _parse_operand(tokens, next_pos)
+            next_pos = _expect(tokens, next_pos, "end", "'end'")
+            return {
+                "kind": "bet_declaration",
+                "name": tokens[position + 1],
+                "left": left,
+                "right": right,
+            }, next_pos
+
+        if position + 1 >= len(tokens) or not is_valid_identifier(tokens[position + 1]):
+            raise ParseError(f"{keyword} requires a valid variable name", position + 1)
+        next_pos = _expect(tokens, position + 2, ":", "':'")
+        expression, next_pos = _parse_expression(tokens, next_pos)
+        next_pos = _expect(tokens, next_pos, "end", "'end'")
+        return {
+            "kind": "declaration",
+            "type": keyword,
+            "name": tokens[position + 1],
+            "expression": expression,
+        }, next_pos
+
+    if keyword == "out":
+        expression, next_pos = _parse_expression(tokens, position + 1)
+        next_pos = _expect(tokens, next_pos, "end", "'end'")
+        return {"kind": "output", "expression": expression}, next_pos
+
+    if keyword in CONDITIONALS:
+        condition_start = position + 1
+        if condition_start >= len(tokens) or tokens[condition_start] in CONDITIONAL_ENDS:
+            raise ParseError(f"{keyword} requires a condition", condition_start)
+        if tokens[condition_start] in DECLARATION_TYPES:
+            declaration = tokens[condition_start]
+            raise ParseError(
+                f"{keyword} conditions use a value, not declaration keyword '{declaration}'; "
+                "use the variable name only",
+                condition_start,
+            )
+        first, next_pos = _parse_operand(tokens, condition_start)
+        condition = [first]
+        if next_pos < len(tokens) and tokens[next_pos] in COMPARISON_OPERATORS:
+            operator = tokens[next_pos]
+            second, next_pos = _parse_operand(tokens, next_pos + 1)
+            condition.extend([operator, second])
+
+        expected_end = f"{keyword}_end"
+        body, next_pos = _parse_statements(tokens, next_pos, expected_end)
+        if not body:
+            raise ParseError(f"{keyword} body cannot be empty", next_pos)
+        next_pos = _expect(tokens, next_pos, expected_end, f"'{expected_end}'")
+        return {
+            "kind": "conditional",
+            "keyword": keyword,
+            "condition": condition,
+            "body": body,
+        }, next_pos
+
+    raise ParseError(f"Unexpected token '{keyword}'", position)
+
+
+def _parse_statements(tokens, position=0, closing=None):
+    statements = []
+    while position < len(tokens) and tokens[position] != closing:
+        if tokens[position] in CONDITIONAL_ENDS:
+            raise ParseError(f"Unexpected '{tokens[position]}'", position)
+        statement, position = _parse_statement(tokens, position, closing)
+        statements.append(statement)
+    return statements, position
+
+
+def parse_program(tokens):
+    statements, position = _parse_statements(tokens)
+    if not statements:
+        raise ParseError("Program contains no statements", 0)
+    if position != len(tokens):
+        raise ParseError(f"Unexpected token '{tokens[position]}'", position)
+    return statements
+
+
+# ---- Semantic analysis and execution ------------------------------------
+
+class SemanticError(Exception):
+    def __init__(self, message, position=0, recovery="semantic_type_mismatch"):
+        super().__init__(message)
+        self.message = message
+        self.position = position
+        self.recovery = recovery
+
+
+def _literal_value(token):
+    literal_type = get_literal_type(token)
+    if literal_type == "digit":
+        number = token.strip()
+        return int(number) if re.fullmatch(r"[+-]?\d+", number) else float(number)
+    if literal_type == "word":
+        try:
+            return ast.literal_eval(token)
+        except (ValueError, SyntaxError):
+            return token[1:-1]
+    if literal_type == "bet":
+        return token.strip().lower() in {"real", "true"}
+    return None
+
+
+def _display_value(value):
+    if isinstance(value, bool):
+        return "Real" if value else "Fake"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _numeric(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _apply_operator(operator, left, left_type, right, right_type, position):
+    if operator == "adds":
+        if left_type == right_type and left_type in {"digit", "word"}:
+            return left_type, left + right
+        raise SemanticError(
+            "adds requires two values of the same digit or word type",
+            position,
+            "semantic_type_mismatch",
+        )
+    if operator == "minus":
+        if left_type == right_type == "digit":
+            return "digit", left - right
+        raise SemanticError("minus works only with two digits", position, "semantic_type_mismatch")
+    if operator == "mul":
+        if left_type == right_type == "digit":
+            return "digit", left * right
+        if left_type == "word" and right_type == "digit" and isinstance(right, int):
+            return "word", left * right
+        raise SemanticError(
+            "mul requires two digits or a word multiplied by a digit",
+            position,
+            "semantic_type_mismatch",
+        )
+    if operator == "div":
+        if left_type == right_type == "digit":
+            if right == 0:
+                raise SemanticError("Division by zero", position, "semantic_type_mismatch")
+            return "digit", left / right
+        raise SemanticError("div works only with two digits", position, "semantic_type_mismatch")
+    raise SemanticError(f"Unknown operator '{operator}'", position, "semantic_type_mismatch")
+
+
+def _run_program(statements, detailed_phases):
+    variables = {}
+    outputs = []
+    symbols = []
+    memory_offset = 0
+    memory_size = {"digit": 4, "word": 1, "bet": 2}
+
+    def resolve(token, position):
+        if token in variables:
+            return variables[token]
+        literal_type = get_literal_type(token)
+        if literal_type is not None:
+            return literal_type, _literal_value(token)
+        raise SemanticError(
+            f"Variable '{token}' not found",
+            position,
+            "semantic_undefined_identifier",
+        )
+
+    def evaluate_expression(expression, position):
+        first, operator, second = expression
+        left_type, left = resolve(first, position)
+        if operator is None:
+            return left_type, left
+        right_type, right = resolve(second, position + 2)
+        return _apply_operator(operator, left, left_type, right, right_type, position + 1)
+
+    def declare(name, value_type, value, position):
+        nonlocal memory_offset
+        if name in variables:
+            raise SemanticError(
+                f"Variable '{name}' already declared",
+                position,
+                "semantic_invalid_declaration",
+            )
+        variables[name] = (value_type, value)
+        symbols.append(f"{name:<20} {value_type:<15} {'global':<12} {memory_offset}")
+        memory_offset += memory_size[value_type]
+
+    def evaluate_condition(statement):
+        condition = statement["condition"]
+        keyword = statement["keyword"]
+        if keyword == "for":
+            if len(condition) != 1:
+                raise SemanticError(
+                    "for accepts one digit count", 0, "semantic_invalid_condition"
+                )
+            value_type, value = resolve(condition[0], 0)
+            if value_type != "digit" or not _numeric(value) or value < 0 or int(value) != value:
+                raise SemanticError(
+                    "for count must be a non-negative whole number",
+                    0,
+                    "semantic_invalid_condition",
+                )
+            return int(value)
+
+        if len(condition) == 1:
+            value_type, value = resolve(condition[0], 0)
+            if value_type != "bet":
+                raise SemanticError(
+                    f"{keyword} requires a bet value or a comparison",
+                    0,
+                    "semantic_invalid_condition",
+                )
+            return bool(value)
+
+        if len(condition) != 3 or condition[1] not in COMPARISON_OPERATORS:
+            raise SemanticError(
+                "Invalid conditional expression", 0, "semantic_invalid_condition"
+            )
+        left_type, left = resolve(condition[0], 0)
+        right_type, right = resolve(condition[2], 0)
+        if left_type != right_type:
+            raise SemanticError(
+                "Compared values must have matching types", 0, "semantic_type_mismatch"
+            )
+        operator = condition[1]
+        if operator == "==":
+            return left == right
+        if operator == "!=":
+            return left != right
+        if operator == "<":
+            return left < right
+        if operator == ">":
+            return left > right
+        if operator == "<=":
+            return left <= right
+        return left >= right
+
+    def run_statement(statement):
+        kind = statement["kind"]
+        if kind == "assignment":
+            if statement["name"] not in variables:
+                raise SemanticError(
+                    f"Variable '{statement['name']}' not found",
+                    0,
+                    "semantic_undefined_identifier",
+                )
+            actual_type, value = evaluate_expression(statement["expression"], 0)
+            expected_type, _ = variables[statement["name"]]
+            if actual_type != expected_type:
+                raise SemanticError(
+                    f"Type mismatch - expected {expected_type}, got {actual_type}",
+                    0,
+                    "semantic_type_mismatch",
+                )
+            variables[statement["name"]] = (expected_type, value)
+            detailed_phases["semantic"].append(
+                f"  Assignment: {statement['name']} -> {_display_value(value)}"
+            )
+            return
+
+        if kind == "declaration":
+            actual_type, value = evaluate_expression(statement["expression"], 0)
+            expected_type = statement["type"]
+            if actual_type != expected_type:
+                raise SemanticError(
+                    f"Type mismatch - expected {expected_type}, got {actual_type}",
+                    0,
+                    "semantic_type_mismatch",
+                )
+            declare(statement["name"], actual_type, value, 0)
+            detailed_phases["semantic"].append(
+                f"  Declaration: {expected_type} {statement['name']} -> {_display_value(value)}"
+            )
+            return
+
+        if kind == "bet_declaration":
+            left_type, left = resolve(statement["left"], 0)
+            right_type, right = resolve(statement["right"], 0)
+            if left_type != right_type:
+                raise SemanticError(
+                    "bet comparison values must have matching types",
+                    0,
+                    "semantic_type_mismatch",
+                )
+            value = left == right
+            declare(statement["name"], "bet", value, 0)
+            detailed_phases["semantic"].append(
+                f"  Comparison: {statement['name']} = {_display_value(value)}"
+            )
+            return
+
+        if kind == "output":
+            _, value = evaluate_expression(statement["expression"], 0)
+            outputs.append(f"> {_display_value(value)}")
+            detailed_phases["semantic"].append(f"  Output: {_display_value(value)}")
+            return
+
+        if kind == "conditional":
+            keyword = statement["keyword"]
+            if keyword == "if":
+                result = evaluate_condition(statement)
+                detailed_phases["semantic"].append(
+                    f"  if condition -> {'Real' if result else 'Fake'}"
+                )
+                if result:
+                    for child in statement["body"]:
+                        run_statement(child)
+                return
+
+            if keyword == "for":
+                count = evaluate_condition(statement)
+                detailed_phases["semantic"].append(f"  for loop -> {count} iteration(s)")
+                for _ in range(count):
+                    for child in statement["body"]:
+                        run_statement(child)
+                return
+
+            iterations = 0
+            while evaluate_condition(statement):
+                iterations += 1
+                if iterations > 100:
+                    raise SemanticError(
+                        "while loop exceeded 100 iterations; check that its condition changes",
+                        0,
+                        "semantic_invalid_condition",
+                    )
+                for child in statement["body"]:
+                    run_statement(child)
+            detailed_phases["semantic"].append(
+                f"  while loop -> {iterations} iteration(s)"
+            )
+
+    for statement in statements:
+        run_statement(statement)
+    return outputs, symbols
+
+
+def _render_statement(statement, indent=0):
+    prefix = "  " * indent
+    kind = statement["kind"]
+    if kind == "assignment":
+        first, operator, second = statement["expression"]
+        expression = f"{first} {operator} {second}" if operator else first
+        return [f"{prefix}{statement['name']} : {expression} end"]
+    if kind == "declaration":
+        first, operator, second = statement["expression"]
+        expression = f"{first} {operator} {second}" if operator else first
+        return [f"{prefix}{statement['type']} {statement['name']} : {expression} end"]
+    if kind == "bet_declaration":
+        return [
+            f"{prefix}bet {statement['name']} := {statement['left']} {statement['right']} end"
+        ]
+    if kind == "output":
+        first, operator, second = statement["expression"]
+        expression = f"{first} {operator} {second}" if operator else first
+        return [f"{prefix}out {expression} end"]
+    if kind == "conditional":
+        condition = " ".join(statement["condition"])
+        lines = [f"{prefix}{statement['keyword']} {condition}"]
+        for child in statement["body"]:
+            lines.extend(_render_statement(child, indent + 1))
+        lines.append(f"{prefix}{statement['keyword']}_end")
+        return lines
+    return []
+
+
+def _set_phase_status(detailed_phases, lexical, syntax, semantic):
+    detailed_phases["phase_status"] = {
+        "lexical": lexical,
+        "syntax": syntax,
+        "semantic": semantic,
+    }
+
+
+# ---- Main compiler entry point ------------------------------------------
 
 def evaluate_compiler_logic(blocks):
     if not blocks:
         return ["Error: No blocks in workspace.", "Status: COMPILATION FAILED"], {}
 
-    valid_blocks = [
-        b for b in blocks
-        if (b.rect.x >= WORKSPACE_LEFT and
-            b.rect.x + b.rect.width <= shared.WIDTH - WORKSPACE_RIGHT_MARGIN and
-            b.rect.y >= shared.workspace_top and
-            b.rect.y + b.rect.height <= shared.workspace_bottom)
-    ]
+    # Block coordinates belong to the persistent blueprint canvas, not to the
+    # current viewport. Resizing the window or panning must not invalidate a
+    # program that is still present in the workspace.
+    valid_blocks = [block for block in blocks if not block.is_template]
     if not valid_blocks:
         return ["Error: No blocks in valid blueprint area.", "Status: COMPILATION FAILED"], {}
 
     reorganize_nesting(valid_blocks)
-
-    chain_starts = [b for b in valid_blocks
-                    if b.prev_block is None and b.parent_conditional is None]
-    if not chain_starts:
-        return ["Error: No valid blocks found.", "Status: COMPILATION FAILED"], {}
-
-    chain_starts.sort(key=lambda b: (b.rect.y, b.rect.x))
-
     tokens = extract_tokens_with_nesting(valid_blocks)
     if not tokens:
         return ["Error: No valid tokens.", "Status: COMPILATION FAILED"], {}
 
     results = []
-    compiled_lines = []
-    output_results = []
     detailed_phases = {
-        "lexical": [], "syntax": [], "semantic": [],
-        "recovery": [], "symbol_table": [], "phase_status": {}
+        "lexical": [],
+        "syntax": [],
+        "semantic": [],
+        "recovery": [],
+        "symbol_table": [],
+        "phase_status": {},
     }
 
-    # -- Lexical --
+    detailed_phases["lexical"].append("PHASE: LEXICAL ANALYSIS")
+    detailed_phases["lexical"].append(f"Tokens: {' '.join(tokens)}")
     lexical_errors = lexical_analysis(tokens)
     if lexical_errors:
         results.extend(lexical_errors)
         results.append("Status: LEXICAL ANALYSIS FAILED")
-        detailed_phases["lexical"] = ["PHASE: LEXICAL ANALYSIS"] + lexical_errors
+        detailed_phases["lexical"].extend(lexical_errors)
         detailed_phases["lexical"].append("Result: [FAILED]")
-        detailed_phases["recovery"] = get_recovery_strategies("lexical_invalid_token", "")
+        detailed_phases["recovery"] = get_recovery_strategies("lexical_invalid_token")
+        _set_phase_status(detailed_phases, False, False, False)
         return results, detailed_phases
 
-    detailed_phases["lexical"].append("PHASE: LEXICAL ANALYSIS")
-    detailed_phases["lexical"].append(f"Tokens: {' '.join(tokens)}")
-    for i, token in enumerate(tokens):
-        if token in KEYWORDS:
-            detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Keyword")
+    for position, token in enumerate(tokens, start=1):
+        if token in SEPARATORS:
+            token_kind = "Separator"
         elif token in OPERATORS:
-            detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Operator")
-        elif token in SEPARATORS:
-            detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Separator")
+            token_kind = "Operator"
+        elif token in KEYWORDS:
+            token_kind = "Keyword"
+        elif get_literal_type(token):
+            token_kind = f"Literal ({get_literal_type(token)})"
         else:
-            lt = get_literal_type(token)
-            if lt:
-                detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Literal ({lt})")
-            else:
-                detailed_phases["lexical"].append(f"  [{i+1}] '{token}' -> Identifier")
+            token_kind = "Identifier"
+        detailed_phases["lexical"].append(f"  [{position}] '{token}' -> {token_kind}")
     detailed_phases["lexical"].append("Result: [PASSED]")
     results.append("Checking Lexical... OK")
 
-    # -- Syntax --
     detailed_phases["syntax"].append("PHASE: SYNTAX ANALYSIS")
-    if tokens[-1] != "end":
-        results.append("Syntax Error: Missing 'end' terminator")
+    try:
+        statements = parse_program(tokens)
+    except ParseError as error:
+        results.append(f"Syntax Error [{error.position + 1}]: {error.message}")
         results.append("Status: SYNTAX ANALYSIS FAILED")
-        detailed_phases["syntax"].append("ERROR: Missing 'end' terminator")
+        detailed_phases["syntax"].append(
+            f"ERROR [{error.position + 1}]: {error.message}"
+        )
         detailed_phases["syntax"].append("Result: [FAILED]")
-        detailed_phases["recovery"] = get_recovery_strategies("syntax_missing_end", "")
+        recovery = (
+            "syntax_missing_end"
+            if "end" in error.message.lower() or "close" in error.message.lower()
+            else "syntax_invalid_start"
+        )
+        detailed_phases["recovery"] = get_recovery_strategies(recovery)
+        _set_phase_status(detailed_phases, True, False, False)
         return results, detailed_phases
-    elif tokens[0] not in ('digit', 'word', 'bet', 'out'):
-        results.append(f"Syntax Error: Invalid start token '{tokens[0]}'")
-        results.append("Status: SYNTAX ANALYSIS FAILED")
-        detailed_phases["syntax"].append(f"ERROR: Invalid start token '{tokens[0]}'")
-        detailed_phases["syntax"].append("Result: [FAILED]")
-        detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", tokens[0])
-        return results, detailed_phases
 
-    for i, token in enumerate(tokens):
-        if token in KEYWORDS and i > 0 and tokens[i-1] in ('digit', 'word', 'bet'):
-            results.append(f"Syntax Error [{i+1}]: Cannot use keyword '{token}' as identifier")
-            results.append("Status: SYNTAX ANALYSIS FAILED")
-            detailed_phases["syntax"].append(
-                f"ERROR: Keyword '{token}' cannot be used as identifier at position {i+1}")
-            detailed_phases["syntax"].append("Result: [FAILED]")
-            detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", "")
-            return results, detailed_phases
-
-    detailed_phases["syntax"].append(f"Program structure validation:")
-    detailed_phases["syntax"].append(f"  Total tokens: {len(tokens)}")
-    statement_start = 0
-    statement_num = 1
-    for i, token in enumerate(tokens):
-        if token == 'end':
-            statement_tokens = tokens[statement_start:i+1]
-            if statement_tokens:
-                first = statement_tokens[0]
-                last  = statement_tokens[-1]
-                stmt_str = ' '.join(statement_tokens)
-                if first in ('digit', 'word', 'bet', 'out') and last == 'end':
-                    detailed_phases["syntax"].append(
-                        f"  Statement {statement_num}: {stmt_str} - [VALID]")
-                else:
-                    results.append(f"Syntax Error: Invalid statement structure at Statement {statement_num}")
-                    results.append(f"Statement {statement_num}: {stmt_str}")
-                    results.append("Expected: [KEYWORD/OUT] [ARGS...] end")
-                    results.append("Status: SYNTAX ANALYSIS FAILED")
-                    detailed_phases["syntax"].append(
-                        f"ERROR: Invalid statement structure at Statement {statement_num}")
-                    detailed_phases["syntax"].append(f"  First token: '{first}' - expected keyword")
-                    detailed_phases["syntax"].append(f"  Last token: '{last}' - expected 'end'")
-                    detailed_phases["syntax"].append("Result: [FAILED]")
-                    detailed_phases["recovery"] = get_recovery_strategies("syntax_invalid_start", "")
-                    return results, detailed_phases
-                statement_num += 1
-            statement_start = i + 1
-
+    detailed_phases["syntax"].append(
+        f"Program structure validation: {len(statements)} statement(s)"
+    )
+    detailed_phases["syntax"].extend(
+        f"  Statement {number}: {line}"
+        for number, statement in enumerate(statements, start=1)
+        for line in _render_statement(statement)
+    )
     detailed_phases["syntax"].append("Result: [PASSED]")
     results.append("Checking Syntax... OK")
 
-    # -- Semantic --
-    variables = {}
-    variable_types = {}
-    memory_offset = 0
-    offset_sizes = {'digit': 4, 'word': 1, 'bet': 2}
-    error_occurred = False
     detailed_phases["semantic"].append("PHASE: SEMANTIC ANALYSIS")
-
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-
-        if token in ('digit', 'word', 'bet'):
-            # bet comparison pattern: bet NAME := V1 V2 end
-            if (token == 'bet' and i + 5 < len(tokens)
-                    and tokens[i+2] == ':=' and tokens[i+5] == 'end'):
-                var_name = tokens[i+1]
-                value1   = tokens[i+3]
-                value2   = tokens[i+4]
-
-                if var_name in KEYWORDS or var_name in OPERATORS or var_name in SEPARATORS:
-                    kind = "keyword" if var_name in KEYWORDS else "reserved symbol"
-                    results.append(f"Semantic Error [{i+2}]: '{var_name}' is a {kind}, cannot use as variable name")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: {kind.capitalize()} '{var_name}' cannot be used as variable name")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                    break
-
-                if '"' in var_name or "'" in var_name or not is_valid_identifier(var_name):
-                    results.append(f"Semantic Error [{i+2}]: Invalid variable name '{var_name}'")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid variable name at token {i+2}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                    break
-
-                if var_name in variables:
-                    results.append(f"Semantic Error [{i+2}]: Variable '{var_name}' already declared")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Duplicate variable name '{var_name}'")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                    break
-
-                def resolve_value(val, pos):
-                    if val in variables:
-                        return variables[val], None
-                    lt = get_literal_type(val)
-                    if lt == 'digit':
-                        try:
-                            return int(val.strip('"\'')), None
-                        except Exception:
-                            return float(val.strip('"\'')), None
-                    elif lt == 'word':
-                        return val.strip('"\''), None
-                    elif lt == 'bet':
-                        return val.strip('"\'').lower() == 'real', None
-                    else:
-                        msg = (f"Semantic Error [{pos}]: Variable '{val}' not found"
-                               if is_valid_identifier(val)
-                               else f"Semantic Error [{pos}]: Invalid value '{val}'")
-                        return None, msg
-
-                val1, err1 = resolve_value(value1, i+3)
-                if err1:
-                    results.append(err1)
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Cannot resolve value at token {i+3}")
-                    break
-                val2, err2 = resolve_value(value2, i+4)
-                if err2:
-                    results.append(err2)
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Cannot resolve value at token {i+4}")
-                    break
-
-                variables[var_name] = (val1 == val2)
-                variable_types[var_name] = 'bet'
-                compiled_lines.append(f"bet {var_name} := {value1} {value2} end")
-                detailed_phases["semantic"].append(f"  Comparison: bet {var_name} := {value1} {value2}")
-                bet_result = "Real" if variables[var_name] else "Fake"
-                detailed_phases["semantic"].append(
-                    f"    Variable '{var_name}' assigned comparison result: {bet_result} (type: bet)")
-                detailed_phases["symbol_table"].append(
-                    f"{var_name:<20} {'bet':<15} {0:<12} {memory_offset}")
-                memory_offset += offset_sizes.get('bet', 0)
-                i += 6
-                continue
-
-            # Standard declaration: TYPE NAME : VALUE [OP VALUE2] end
-            has_op = (i + 6 < len(tokens) and tokens[i+2] == ':'
-                      and tokens[i+4] in ('adds', 'minus', 'mul', 'div')
-                      and tokens[i+6] == 'end')
-
-            if not has_op:
-                if not (i + 4 < len(tokens) and tokens[i+2] == ':' and tokens[i+4] == 'end'):
-                    if not (i + 6 < len(tokens) and tokens[i+4] in ('adds', 'minus')):
-                        results.append(
-                            f"Semantic Error [{i+1}]: Invalid declaration - expected ID : VALUE end")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Invalid declaration at token {i+1}")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                        break
-
-            var_name  = tokens[i+1]
-            value     = tokens[i+3]
-            exp_type  = token
-            val_strip = value.strip('"\'')
-            value2    = tokens[i+5] if has_op else None
-            val2_strip= value2.strip('"\'') if value2 else None
-
-            # Validate variable name
-            for check, kind in [
-                (var_name in KEYWORDS, "keyword"),
-                (var_name in OPERATORS or var_name in SEPARATORS,
-                 "mathematical keyword" if var_name in ('adds', 'minus') else "reserved symbol"),
-                ('"' in var_name or "'" in var_name, "quoted name"),
-                (not is_valid_identifier(var_name), "invalid identifier"),
-            ]:
-                if check:
-                    results.append(f"Semantic Error [{i+2}]: '{var_name}' is a {kind}, cannot use as variable name")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(
-                        f"ERROR: {kind.capitalize()} '{var_name}' cannot be used as variable name")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                    break
-            if error_occurred:
-                break
-
-            if var_name in variables:
-                results.append(f"Semantic Error [{i+2}]: Variable '{var_name}' already declared")
-                error_occurred = True
-                detailed_phases["semantic"].append(f"ERROR: Duplicate variable name '{var_name}'")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                break
-
-            # Type-check value
-            actual_type = get_literal_type(value)
-            if actual_type is None:
-                if is_valid_identifier(value):
-                    if value not in variables:
-                        results.append(f"Semantic Error [{i+3}]: Variable '{value}' not found")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Undefined variable '{value}'")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value)
-                        break
-                    actual_type = variable_types.get(value, exp_type)
-                else:
-                    results.append(f"Semantic Error [{i+3}]: Variable '{value}' not found")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid value or undefined variable '{value}'")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value)
-                    break
-
-            if actual_type != exp_type:
-                results.append(f"Semantic Error [{i+3}]: Type mismatch - expected {exp_type}, got {actual_type or 'invalid'}")
-                error_occurred = True
-                detailed_phases["semantic"].append(
-                    f"ERROR: Type mismatch at '{var_name}' - expected {exp_type}, got {actual_type}")
-                detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", "")
-                break
-
-            if has_op:
-                actual_type2 = get_literal_type(value2)
-                if actual_type2 is None:
-                    if is_valid_identifier(value2):
-                        if value2 not in variables:
-                            results.append(f"Semantic Error [{i+5}]: Variable '{value2}' not found")
-                            error_occurred = True
-                            detailed_phases["semantic"].append(f"ERROR: Undefined variable '{value2}'")
-                            detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value2)
-                            break
-                        actual_type2 = variable_types.get(value2, exp_type)
-                    else:
-                        results.append(f"Semantic Error [{i+5}]: Variable '{value2}' not found")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(f"ERROR: Invalid value or undefined variable '{value2}'")
-                        detailed_phases["recovery"] = get_recovery_strategies("semantic_undefined_identifier", value2)
-                        break
-
-                if actual_type2 != exp_type:
-                    results.append(f"Semantic Error [{i+5}]: Type mismatch in operation - expected {exp_type}, got {actual_type2 or 'invalid'}")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Type mismatch in operation")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", "")
-                    break
-
-                op = tokens[i+4]
-                if op in ('minus', 'div') and exp_type == 'word':
-                    results.append(f"Semantic Error [{i+4}]: {op.capitalize()} operation is not supported for word type")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: {op.capitalize()} cannot be used with word type")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_type_mismatch", "")
-                    break
-
-            # Evaluate and bind
-            op = tokens[i+4] if has_op else None
-
-            def get_val(v, strip):
-                if v in variables:
-                    return variables[v]
-                if exp_type == 'digit':
-                    try:
-                        return int(strip)
-                    except Exception:
-                        return float(strip)
-                if exp_type == 'word':
-                    return strip
-                return strip.lower() == 'real'
-
-            val1 = get_val(value, val_strip)
-            if has_op:
-                val2 = get_val(value2, val2_strip)
-                if op == 'adds':
-                    result = val1 + val2
-                elif op == 'minus':
-                    result = val1 - val2
-                elif op == 'mul':
-                    if exp_type == 'word':
-                        try:
-                            result = val1 * (int(val2) if isinstance(val2, str) else val2)
-                        except Exception:
-                            results.append(f"Semantic Error [{i+5}]: String multiplication requires numeric multiplier")
-                            error_occurred = True
-                            detailed_phases["semantic"].append("ERROR: String multiplication requires numeric multiplier")
-                            break
-                    else:
-                        result = val1 * val2
-                elif op == 'div':
-                    if val2 == 0:
-                        results.append(f"Semantic Error [{i+5}]: Division by zero")
-                        error_occurred = True
-                        detailed_phases["semantic"].append("ERROR: Division by zero")
-                        break
-                    result = val1 / val2
-                variables[var_name] = result
-            else:
-                variables[var_name] = val1
-
-            variable_types[var_name] = exp_type
-
-            if has_op:
-                compiled_lines.append(f"{exp_type} {var_name} : {value} {op} {value2} end")
-                detailed_phases["semantic"].append(
-                    f"  Declaration: {exp_type} {var_name} : {value} {op} {value2}")
-                detailed_phases["semantic"].append(
-                    f"    Variable '{var_name}' bound to value '{variables[var_name]}' (type: {exp_type})")
-            else:
-                compiled_lines.append(f"{exp_type} {var_name} : {value} end")
-                detailed_phases["semantic"].append(f"  Declaration: {exp_type} {var_name} : {value}")
-                detailed_phases["semantic"].append(
-                    f"    Variable '{var_name}' bound to value '{value}' (type: {exp_type})")
-
-            detailed_phases["symbol_table"].append(
-                f"{var_name:<20} {exp_type:<15} {0:<12} {memory_offset}")
-            memory_offset += offset_sizes.get(exp_type, 0)
-            i += 7 if has_op else 5
-
-        elif token == 'out':
-            has_out_op = (i + 4 < len(tokens)
-                          and tokens[i+2] in ('adds', 'minus', 'mul', 'div')
-                          and tokens[i+4] == 'end')
-            if not has_out_op:
-                if i + 2 >= len(tokens) or tokens[i+2] != 'end':
-                    results.append(
-                        f"Semantic Error [{i+1}]: Invalid output - expected out VALUE end")
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid output statement at token {i+1}")
-                    detailed_phases["recovery"] = get_recovery_strategies("semantic_invalid_declaration", "")
-                    break
-
-            out_val1 = tokens[i+1]
-
-            if has_out_op:
-                op      = tokens[i+2]
-                out_val2= tokens[i+3]
-                compiled_lines.append(f"out {out_val1} {op} {out_val2} end")
-
-                def get_out_val(v, pos):
-                    if v in variables:
-                        return variables[v], None
-                    lt = get_literal_type(v)
-                    if lt == 'digit':
-                        try:
-                            return int(v.strip('"\'')), None
-                        except Exception:
-                            return float(v.strip('"\'')), None
-                    elif lt == 'word':
-                        return v.strip('"\''), None
-                    return None, f"Semantic Error [{pos}]: Undefined identifier or invalid value '{v}'"
-
-                val1, err1 = get_out_val(out_val1, i+1)
-                if err1:
-                    results.append(err1)
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid output value '{out_val1}'")
-                    break
-                val2, err2 = get_out_val(out_val2, i+3)
-                if err2:
-                    results.append(err2)
-                    error_occurred = True
-                    detailed_phases["semantic"].append(f"ERROR: Invalid output value '{out_val2}'")
-                    break
-
-                if op == 'adds':
-                    result = val1 + val2
-                elif op == 'minus':
-                    if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
-                        result = val1 - val2
-                    elif isinstance(val1, str) and isinstance(val2, str):
-                        results.append(f"Semantic Error [{i+2}]: Minus operation is not supported for word type")
-                        error_occurred = True
-                        detailed_phases["semantic"].append("ERROR: Minus cannot be used with word type")
-                        break
-                    else:
-                        results.append(f"Semantic Error [{i+1}]: Cannot use minus with mixed types")
-                        error_occurred = True
-                        detailed_phases["semantic"].append("ERROR: Type mismatch in minus operation")
-                        break
-                elif op == 'mul':
-                    result = val1 * val2
-                elif op == 'div':
-                    if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
-                        if val2 == 0:
-                            results.append(f"Semantic Error [{i+3}]: Division by zero")
-                            error_occurred = True
-                            detailed_phases["semantic"].append("ERROR: Division by zero")
-                            break
-                        result = val1 / val2
-                    else:
-                        results.append(f"Semantic Error [{i+2}]: Division operation only works with digits")
-                        error_occurred = True
-                        detailed_phases["semantic"].append("ERROR: Division only works with digits")
-                        break
-
-                output_results.append(f"> {result}")
-                detailed_phases["semantic"].append(
-                    f"  Output: {out_val1} {op} {out_val2} = {result}")
-                i += 5
-            else:
-                compiled_lines.append(f"out {out_val1} end")
-                if out_val1 in variables:
-                    out_v = variables[out_val1]
-                    if isinstance(out_v, bool):
-                        out_v = "Real" if out_v else "Fake"
-                    output_results.append(f"> {out_v}")
-                    detailed_phases["semantic"].append(
-                        f"  Output: Variable '{out_val1}' = {out_v}")
-                else:
-                    lt = get_literal_type(out_val1)
-                    if lt:
-                        stripped = out_val1.strip('"\'')
-                        if lt == 'digit':
-                            try:
-                                val = int(stripped)
-                            except Exception:
-                                val = float(stripped)
-                            output_results.append(f"> {val}")
-                            detailed_phases["semantic"].append(
-                                f"  Output: Literal value '{val}' (type: {lt})")
-                        elif lt == 'word':
-                            output_results.append(f"> {stripped}")
-                            detailed_phases["semantic"].append(
-                                f"  Output: Literal string '{stripped}'")
-                        else:
-                            output_results.append(f"> {out_val1}")
-                            detailed_phases["semantic"].append(
-                                f"  Output: Literal value '{out_val1}'")
-                    else:
-                        results.append(
-                            f"Semantic Error [{i+1}]: Undefined identifier '{out_val1}'")
-                        error_occurred = True
-                        detailed_phases["semantic"].append(
-                            f"ERROR: Undefined identifier '{out_val1}'")
-                        detailed_phases["recovery"] = get_recovery_strategies(
-                            "semantic_undefined_identifier", out_val1)
-                        break
-                i += 3
-        else:
-            i += 1
-
-    if not error_occurred:
-        results.append("Checking Semantical... OK")
-    if compiled_lines:
-        results.append("Compiled Output:")
-        results.extend(compiled_lines)
-    if output_results:
-        results.extend(output_results)
-
-    if error_occurred:
+    try:
+        output_results, symbols = _run_program(statements, detailed_phases)
+    except SemanticError as error:
+        results.append(f"Semantic Error [{error.position + 1}]: {error.message}")
         results.append("Status: SEMANTIC ANALYSIS FAILED")
+        detailed_phases["semantic"].append(
+            f"ERROR [{error.position + 1}]: {error.message}"
+        )
         detailed_phases["semantic"].append("Result: [FAILED]")
-    else:
-        results.append("Status: COMPILATION SUCCESS")
-        results.append("Program executed successfully!")
-        detailed_phases["semantic"].append("Result: [PASSED]")
+        detailed_phases["recovery"] = get_recovery_strategies(error.recovery)
+        _set_phase_status(detailed_phases, True, True, False)
+        return results, detailed_phases
 
-    detailed_phases["phase_status"] = {
-        "lexical":  "PASSED" in " ".join(detailed_phases.get("lexical", [])),
-        "syntax":   "PASSED" in " ".join(detailed_phases.get("syntax", [])),
-        "semantic": "PASSED" in " ".join(detailed_phases.get("semantic", [])),
-    }
+    detailed_phases["symbol_table"] = symbols
+    detailed_phases["semantic"].append("Result: [PASSED]")
+    compiled_lines = [
+        line for statement in statements for line in _render_statement(statement)
+    ]
+    results.append("Checking Semantical... OK")
+    results.append("Compiled Output:")
+    results.extend(compiled_lines)
+    results.extend(output_results)
+    results.append("Status: COMPILATION SUCCESS")
+    results.append("Program executed successfully!")
+    _set_phase_status(detailed_phases, True, True, True)
     return results, detailed_phases

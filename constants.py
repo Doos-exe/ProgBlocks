@@ -46,7 +46,11 @@ KEYWORDS = {
     'digit', 'word', 'bet', 'out', 'adds', 'minus', 'mul', 'div',
     'end', 'if', 'while', 'for', 'if_end', 'while_end', 'for_end'
 }
-OPERATORS = {':', ':=', 'adds', 'minus', 'mul', 'div'}
+OPERATORS = {
+    ':', ':=', 'adds', 'minus', 'mul', 'div',
+    '==', '!=', '<', '>', '<=', '>='
+}
+CONDITION_OPERATORS = {'==', '!=', '<', '>', '<=', '>='}
 SEPARATORS = {'end'}
 
 # ---- Block palette ----
@@ -60,6 +64,12 @@ AVAILABLE_BLOCKS = [
     ("minus",  BLUE_BLOCK,   "Operator"),
     ("mul",    BLUE_BLOCK,   "Operator"),
     ("div",    BLUE_BLOCK,   "Operator"),
+    ("==",     BLUE_BLOCK,   "Operator"),
+    ("!=",     BLUE_BLOCK,   "Operator"),
+    ("<",      BLUE_BLOCK,   "Operator"),
+    (">",      BLUE_BLOCK,   "Operator"),
+    ("<=",     BLUE_BLOCK,   "Operator"),
+    (">=",     BLUE_BLOCK,   "Operator"),
     ("end",    GRAY_BLOCK,   "Separator"),
     ("out",    GRAY_BLOCK,   "Keyword"),
     ("data",   PURPLE_BLOCK, "Editable"),

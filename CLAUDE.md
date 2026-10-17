@@ -37,13 +37,15 @@ The compiler pipeline runs on the token sequence extracted from placed blocks:
 | Construct | Pattern |
 |---|---|
 | Declare | `digit NAME : VALUE end` |
+| Assignment | `NAME : VALUE [OP VALUE] end` |
 | Assign with op | `digit NAME : VALUE adds VALUE end` |
 | Output | `out VALUE end` |
 | Output with op | `out VALUE adds VALUE end` |
-| Conditional | `if BODY if_end` (blocks nested spatially) |
+| Conditional | `if CONDITION ... if_end`, `while CONDITION ... while_end`, or `for COUNT ... for_end` |
 
 - **Types**: `digit` (int, 4 bytes), `word` (string, 1 byte), `bet` (boolean, 2 bytes; values: `real`/`fake`)
-- **Operators**: `adds`, `minus`, `mul`, `div` (minus/div unsupported for `word`)
+- **Operators**: `adds`, `minus`, `mul`, `div`, `==`, `!=`, `<`, `>`, `<=`, `>=`
+- **Conditions**: a `bet` value or a three-token comparison expression; `for` uses a non-negative whole-number count
 
 ### 3. UI / Main Loop (lines ~1155–1789)
 - **Layout**: Fixed 50px header, dynamically sized workspace, draggable-separator console at bottom
@@ -51,9 +53,9 @@ The compiler pipeline runs on the token sequence extracted from placed blocks:
 - **Sidebar** (`sidebar_blocks`): template blocks at fixed left positions; clicking clones a new block into `placed_blocks`
 - **Blueprint** (`placed_blocks`): blocks live at logical coordinates; rendered via `get_block_view_rect()` which applies `zoom_scale` and `workspace_scroll_offset`
 - **Connections**: on MOUSEBUTTONUP, proximity check snaps dragged block to the nearest free chain end (vertical ≤20px gap, horizontal ≤20px gap)
-- **Nesting**: `reorganize_nesting()` runs after every drop, spatially assigns blocks inside conditional C-shapes
+- **Nesting**: `reorganize_nesting()` runs after every drop, assigns the nearest conditional body, and disconnects chains that cross a body boundary
 - **Explainability window**: `show_explainability_window()` opens a separate Pygame window showing lexical tokens, syntax validation, semantic analysis, and symbol table
-- **Controls**: Ctrl+Scroll or +/- buttons to zoom (0.5×–2.0×); arrow keys scroll the workspace; mouse wheel in console scrolls output; separator bar is draggable
+- **Controls**: Ctrl+Scroll or +/- buttons to zoom (0.5×–2.0×); mouse button 2 or 3 drag pans the blueprint; mouse wheel scrolls it; Shift+wheel pans horizontally; arrow keys also scroll the workspace; mouse wheel in console scrolls output; separator bar is draggable
 
 ## Key Global State
 
@@ -72,6 +74,6 @@ The compiler pipeline runs on the token sequence extracted from placed blocks:
 ## Important Constraints
 
 - Block logical coordinates are unzoomed; `get_block_view_rect()` converts to screen coordinates for hit-testing and drawing
-- `evaluate_compiler_logic()` uses global `workspace_top`/`workspace_bottom` to filter out-of-bounds blocks — these must be current before calling
+- `evaluate_compiler_logic()` compiles all placed blocks on the persistent canvas; viewport resizing and panning do not invalidate a program
 - Blocks dropped to the left of `WORKSPACE_LEFT`, above `workspace_top`, below `workspace_bottom`, or to the right of `WIDTH - WORKSPACE_RIGHT_MARGIN` are automatically removed from `placed_blocks`
-- `"Editable"` blocks start disconnection on drag (not on click), so a single click enters text-edit mode without moving the block
+- `"Editable"` blocks enter text-edit mode on click; they begin disconnection only after the pointer moves beyond the drag threshold

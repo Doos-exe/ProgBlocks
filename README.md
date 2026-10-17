@@ -13,6 +13,7 @@ A low-code based programming language built with **Python** and **Pygame**. Prog
 - **Interactive Console**: View output and error messages
 - **Symbol Table**: Track all variables and their values
 - **Multi-line Code Support**: Write complex programs with multiple statements
+- **Conditional Blocks**: Run `if`, `while`, and bounded `for` block bodies
 
 ## Installation
 
@@ -85,6 +86,16 @@ word greeting : "Hello World" end
 word message : "Hello" adds " World" end
 ```
 
+### Assignment
+
+An existing variable can be updated without redeclaring it:
+
+```
+x : x adds 1 end
+```
+
+Assignments are especially useful inside `while` and `for` bodies.
+
 ### Boolean - `bet`
 Declares a boolean value (Real or Fake).
 
@@ -113,6 +124,24 @@ out "Hello" end
 out 42 end
 ```
 
+### Conditional Blocks
+
+Conditional blocks use their visual condition slot and their nested body:
+
+```
+bet ready := 1 1 end
+if ready
+    out "Ready" end
+if_end
+```
+
+`if` and `while` accept a `bet` value or a comparison such as `3 > 2`.
+The available comparison operators are `==`, `!=`, `<`, `>`, `<=`, and `>=`.
+`for` accepts one non-negative whole-number count, for example `for 3`.
+Conditional bodies must contain at least one statement. `while` is protected
+by a 100-iteration safety limit so an unchanged true condition cannot freeze
+the application.
+
 ### Operators
 
 #### `adds` - Addition/Concatenation
@@ -132,6 +161,11 @@ word sentence : "Hello" adds " World" end  // Result: "Hello World"
 digit diff : 10 minus 3 end      // Result: 7
 ```
 
+#### `mul` and `div`
+
+`mul` multiplies digits and can repeat a word by a whole-number count.
+`div` divides digits and reports an error for division by zero.
+
 ## How to Use the GUI
 
 ### Main Components
@@ -150,8 +184,9 @@ digit diff : 10 minus 3 end      // Result: 7
 
 ### Block Operations
 
-- **Drag a Block**: Click and drag any block from the template panel to the workspace
-- **Edit Data Block**: Double-click a purple data block to enter a custom value
+- **Create Blocks**: Click and drag a block from the template panel to the workspace; every drag creates a new independent copy
+- **Edit Data Block**: Click a purple data block and type its custom value; press Enter to commit or Escape to cancel. A short movement edits; move farther to drag the block
+- **Pan the Blueprint**: Drag with mouse button 2 (middle) or mouse button 3 (right), or use the mouse wheel over the workspace. Hold Shift while scrolling for horizontal movement
 - **Delete a Block**: Drag the block to outside the blueprint area
 - **Compile & Run**: Click the "RUN" button to execute your program
 - **Clear Workspace**: Click the "CLEAR" button to remove all blocks
